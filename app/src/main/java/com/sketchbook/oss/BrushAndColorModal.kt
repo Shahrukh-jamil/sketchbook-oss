@@ -126,18 +126,11 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
         val sy = viewH / 2408f
 
         // Outer White Sheet Frame matching 115925.jpg (x=23..1057, y=75..viewH)
-        val sheetLeft = 22f * sx
-        val sheetRight = viewW - 22f * sx
-        val sheetTop = 72f * sy
-        outerCardRect.set(sheetLeft, sheetTop, sheetRight, viewH)
-
-        fillPaint.color = Color.WHITE
-        canvas.drawRect(outerCardRect, fillPaint)
-
         val innerLeft = 124f * sx
         val innerRight = viewW - 124f * sx
         val innerTop = 124f * sy
         val innerBottom = viewH - 224f * sy
+        outerCardRect.set(innerLeft, innerTop, innerRight, innerBottom)
 
         if (isColorMode) {
             drawColorModalContent(canvas, innerLeft, innerTop, innerRight, innerBottom, sx, sy)
@@ -209,12 +202,13 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
         textPaint.textSize = 42f * sx
         textPaint.textAlign = Paint.Align.LEFT
         textPaint.isFakeBoldText = false
-        canvas.drawText(activeBrush.name, left + 150f * sx, infoTop + 76f * sy, textPaint)
+        val maxInfoTextW = (right - left) - 275f * sx
+        canvas.drawText(ellipsizeText(activeBrush.name, textPaint, maxInfoTextW), left + 150f * sx, infoTop + 76f * sy, textPaint)
 
         subTextPaint.color = Color.rgb(118, 118, 118)
         subTextPaint.textSize = 31f * sx
         subTextPaint.textAlign = Paint.Align.LEFT
-        canvas.drawText(activeSet.name, left + 150f * sx, infoTop + 128f * sy, subTextPaint)
+        canvas.drawText(ellipsizeText(activeSet.name, subTextPaint, maxInfoTextW), left + 150f * sx, infoTop + 128f * sy, subTextPaint)
 
         // In Brush Settings tab (or when Set/Brush overlay is open), show the '≡' box icon on the right of Info Bar!
         if (brushTopTab == BrushModalTopTab.SETTINGS_SLIDERS || subOverlay == BrushSubOverlay.SET_SETTINGS || subOverlay == BrushSubOverlay.BRUSH_ACTIONS) {
@@ -244,109 +238,153 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
     /**
      * Renders a rich, realistic, contained S-curve stroke preview matching 115925.jpg & 115938.jpg.
      */
+    private fun ellipsizeText(str: String, paint: Paint, maxW: Float): String {
+        if (paint.measureText(str) <= maxW) return str
+        var s = str
+        while (s.length > 1 && paint.measureText("$s...") > maxW) {
+            s = s.dropLast(1)
+        }
+        return "$s..."
+    }
+
     private fun drawContainedBrushPreview(canvas: Canvas, rect: RectF, brush: SketchBrushItem, sx: Float) {
         canvas.save()
         canvas.clipRect(rect)
 
-        val steps = 85
-        val cy = rect.centerY()
-        val amp = rect.height() * 0.14f
-        val maxRad = (brush.size.coerceIn(3f, 200f) * 0.34f * sx).coerceIn(3f * sx, rect.height() * 0.36f)
-        val baseAlpha = ((brush.opacity / 100f) * 255f).roundToInt().coerceIn(8, 255)
-
-        val drawColor = when {
-            brush.brushType == SketchBrushType.ERASER || colorState.isColorlessEraser -> Color.rgb(210, 215, 222)
-            brush.name == "Duplicate" && brush.grainStrength > 50f -> Color.rgb(132, 92, 74) // Brown textured stroke like 115938.jpg!
-            else -> colorState.currentColor
-        }
-
-        val r = Color.red(drawColor)
-        val g = Color.green(drawColor)
-        val b = Color.blue(drawColor)
-
-        for (i in 0..steps) {
-            val t = i.toFloat() / steps.toFloat()
-            val x = rect.left + t * rect.width()
-            val wave = sin(t * Math.PI * 2.0 + Math.PI * 0.9).toFloat() * amp
-            val y = cy + wave
-
-            // Natural pressure bell curve along the preview stroke
-            val envelope = (0.38f + 0.62f * sin(t * Math.PI).toFloat()).coerceIn(0.2f, 1f)
-            val rad = (maxRad * envelope).coerceAtLeast(2f)
-
-            
-            if (brush.modMode == "procedural_web") {
-                strokePaint.color = Color.argb((baseAlpha * 0.65f).toInt().coerceAtLeast(20), r, g, b)
-                strokePaint.strokeWidth = 2.2f * sx
-                val wx = x + sin(i * 1.7f) * rad * 0.9f
-                val wy = y + cos(i * 1.3f) * rad * 0.9f
-                canvas.drawLine(x, y, wx, wy, strokePaint)
-                if (i % 3 == 0) {
-                    canvas.drawLine(x, y, x - rad * 1.4f, y + sin(i * 0.8f) * rad, strokePaint)
+        if (colorState.isColorlessEraser || brush.brushType == SketchBrushType.ERASER) {
+            val sq = 18f * sx
+            var ry = rect.top
+            var rowIdx = 0
+            while (ry < rect.bottom) {
+                var rx = rect.left
+                var colIdx = rowIdx % 2
+                while (rx < rect.right) {
+                    fillPaint.color = if (colIdx % 2 == 0) Color.rgb(245, 245, 245) else Color.rgb(222, 222, 222)
+                    canvas.drawRect(rx, ry, min(rect.right, rx + sq), min(rect.bottom, ry + sq), fillPaint)
+                    rx += sq
+                    colIdx++
                 }
-                previewPaint.color = Color.argb(baseAlpha, r, g, b)
-                canvas.drawCircle(x, y, rad * 0.28f, previewPaint)
-            } else if (brush.modMode == "time_animated") {
-                val timeNow = (System.nanoTime() / 1_000_000_000.0).toFloat()
-                val animY = y + sin(timeNow * 5f + i * 0.25f) * (rad * 0.55f)
-                val hueShift = ((ColorStudioState.colorToHsl(drawColor)[0] + i * 2f + timeNow * 60f) % 360f)
-                val dynCol = ColorStudioState.hslToColor(hueShift, 0.85f, 0.55f)
-                previewPaint.color = Color.argb((baseAlpha * 0.22f).toInt().coerceAtLeast(8), Color.red(dynCol), Color.green(dynCol), Color.blue(dynCol))
-                canvas.drawCircle(x, animY, rad * 1.8f, previewPaint)
-                previewPaint.color = Color.argb(baseAlpha, 255, 255, 255)
-                canvas.drawCircle(x, animY, rad * 0.42f, previewPaint)
-                hostView.postInvalidateOnAnimation()
-            } else if (brush.modMode == "custom_harmonic_nib") {
-                val lobes = (brush.modParams["lobes"]?.toIntOrNull() ?: 5).coerceIn(3, 12)
-                // Zone 3: Ultra-smooth feathered outer aura
-                previewPaint.color = Color.argb((baseAlpha * 0.10f).toInt().coerceAtLeast(4), r, g, b)
-                canvas.drawCircle(x, y, rad * 1.45f, previewPaint)
-                // Zone 2: Translucent harmonic petals
-                previewPaint.color = Color.argb((baseAlpha * 0.34f).toInt().coerceAtLeast(10), r, g, b)
-                for (L in 0 until lobes) {
-                    val ang = (L * 2.0 * Math.PI / lobes) + t * 2.5
-                    val px = x + cos(ang).toFloat() * rad * 0.72f
-                    val py = y + sin(ang).toFloat() * rad * 0.72f
-                    canvas.drawCircle(px, py, rad * 0.42f, previewPaint)
-                }
-                // Zone 1: Crisp high-opacity inner crescent core
-                previewPaint.color = Color.argb(baseAlpha, r, g, b)
-                canvas.drawCircle(x, y, rad * 0.36f, previewPaint)
-            } else if (brush.brushType == SketchBrushType.GLOW) {
-                previewPaint.color = Color.argb((baseAlpha * 0.12f).toInt().coerceAtLeast(4), r, g, b)
-                canvas.drawCircle(x, y, rad * 1.9f, previewPaint)
-                previewPaint.color = Color.argb((baseAlpha * 0.45f).toInt().coerceAtLeast(10), 255, 255, 255)
-                canvas.drawCircle(x, y, rad * 0.55f, previewPaint)
-            } else if (brush.grainStrength > 25f) {
-                // Multi-ribbed overlay texture appearance matching 115938.jpg
-                previewPaint.color = Color.argb((baseAlpha * 0.26f).toInt().coerceAtLeast(6), r, g, b)
-                canvas.drawCircle(x, y, rad, previewPaint)
-                strokePaint.color = Color.argb((baseAlpha * 0.48f).toInt().coerceAtLeast(12), (r * 0.7f).toInt(), (g * 0.7f).toInt(), (b * 0.7f).toInt())
-                strokePaint.strokeWidth = 1.6f * sx
-                for (rib in -3..3) {
-                    val ry = y + rib * (rad * 0.24f)
-                    canvas.drawPoint(x, ry, strokePaint)
-                }
-            } else if (brush.roundness < 75f || brush.brushType == SketchBrushType.MARKER) {
-                previewPaint.color = Color.argb((baseAlpha * 0.42f).toInt().coerceAtLeast(12), r, g, b)
-                canvas.save()
-                canvas.translate(x, y)
-                canvas.rotate(brush.rotation)
-                val rx = rad
-                val ry = rad * (brush.roundness / 100f).coerceIn(0.2f, 1f)
-                canvas.drawOval(RectF(-rx, -ry, rx, ry), previewPaint)
-                canvas.restore()
-            } else {
-                previewPaint.color = Color.argb(baseAlpha, r, g, b)
-                canvas.drawCircle(x, y, rad, previewPaint)
+                ry += sq
+                rowIdx++
             }
         }
+
+        val padX = 48f * sx
+        val startX = rect.left + padX
+        val endX = rect.right - padX
+        val spanW = (endX - startX).coerceAtLeast(10f)
+        val cy = rect.centerY()
+        val amp = rect.height() * 0.16f
+
+        val drawColor = if (colorState.isColorlessEraser || brush.brushType == SketchBrushType.ERASER) {
+            Color.rgb(190, 195, 205)
+        } else {
+            colorState.currentColor
+        }
+
+        if (brush.modMode == "time_animated") {
+            val timeNow = (System.nanoTime() / 1_000_000_000.0).toFloat()
+            val spd = brush.modParams["speed"]?.toFloatOrNull() ?: 3.8f
+            val wv = (brush.modParams["wave"]?.toFloatOrNull() ?: 14f) * sx * 0.45f
+            val hShift = brush.modParams["hue_shift"]?.toFloatOrNull() ?: 45f
+            val baseHsl = ColorStudioState.colorToHsl(drawColor)
+            val stepPx = max(3f * sx, brush.size * 0.35f * sx * (brush.spacing / 50f).coerceIn(0.12f, 2.0f))
+            var d = 0f
+            var idx = 0
+            while (d <= spanW) {
+                val t = d / spanW
+                val x = startX + d
+                val y = cy + sin(t * Math.PI * 2.0 + Math.PI * 0.9).toFloat() * amp + sin(timeNow * spd + idx * 0.35f) * wv
+                val pNorm = sin(t * Math.PI).toFloat().coerceIn(0.12f, 1.0f)
+                val sizePress = (brush.sizeLightPressure + (brush.sizeHeavyPressure - brush.sizeLightPressure) * pNorm) / 100f
+                val opacPress = (brush.opacityLightPressure + (brush.opacityHeavyPressure - brush.opacityLightPressure) * pNorm) / 100f
+                val rad = (brush.size * 0.35f * sx * sizePress).coerceIn(2f * sx, rect.height() * 0.40f)
+                val alpha = ((brush.opacity / 100f) * opacPress * 255f).roundToInt().coerceIn(8, 255)
+                val shiftedHue = (baseHsl[0] + sin(timeNow * 2f + idx * 0.3f) * hShift + 360f) % 360f
+                val glowCol = ColorStudioState.hslToColor(shiftedHue, baseHsl[1].coerceAtLeast(0.75f), baseHsl[2].coerceIn(0.35f, 0.7f))
+                previewPaint.color = Color.argb((alpha * 0.28f).toInt().coerceAtLeast(6), Color.red(glowCol), Color.green(glowCol), Color.blue(glowCol))
+                canvas.drawCircle(x, y, rad * 1.7f, previewPaint)
+                previewPaint.color = Color.argb(alpha, 255, 255, 255)
+                canvas.drawCircle(x, y, rad * 0.42f, previewPaint)
+                d += stepPx
+                idx++
+            }
+            hostView.postInvalidateOnAnimation()
+            canvas.restore()
+            return
+        }
+
+        val previewBrush = brush.copy(size = (brush.size * 0.55f * sx).coerceIn(2f * sx, rect.height() * 0.78f))
+        val procHist = mutableListOf<PointF>()
+        val totalSamples = 240
+        var prevX = startX
+        var prevY = cy + sin(Math.PI * 0.9).toFloat() * amp
+        var carryDist = 0f
+        var dabIdx = 0
+
+        UnifiedBrushRenderer.renderSingleDab(
+            canvas = canvas,
+            brush = previewBrush,
+            x = prevX,
+            y = prevY,
+            tangentDeg = 0f,
+            pressureNorm = 0.15f,
+            baseColor = drawColor,
+            isTransparentColor = false,
+            dabIndex = dabIdx++,
+            deterministicRandom = true,
+            procHistory = procHist,
+            smudgeBitmap = null,
+            smudgeCarryColorHolder = null
+        )
+
+        for (s in 1..totalSamples) {
+            val t = s.toFloat() / totalSamples.toFloat()
+            val curX = startX + t * spanW
+            val curY = cy + sin(t * Math.PI * 2.0 + Math.PI * 0.9).toFloat() * amp
+            val segLen = hypot(curX - prevX, curY - prevY)
+            val tangentDeg = Math.toDegrees(atan2((curY - prevY).toDouble(), (curX - prevX).toDouble())).toFloat()
+
+            val pNorm = sin(t * Math.PI).toFloat().coerceIn(0.10f, 1.0f)
+            val sizeScale = (previewBrush.sizeLightPressure + (previewBrush.sizeHeavyPressure - previewBrush.sizeLightPressure) * pNorm) / 100f
+            val curRad = (previewBrush.size * 0.5f * sizeScale.coerceIn(0.15f, 1.4f)).coerceAtLeast(1.2f)
+            val stepSpacingPx = max(1.2f * sx, curRad * 2f * (previewBrush.spacing / 100f).coerceIn(0.03f, 2.5f))
+
+            var distLeft = carryDist + segLen
+            if (distLeft >= stepSpacingPx && segLen > 0.0001f) {
+                var traveled = stepSpacingPx - carryDist
+                while (traveled <= segLen) {
+                    val frac = (traveled / segLen).coerceIn(0f, 1f)
+                    val sxPt = prevX + (curX - prevX) * frac
+                    val syPt = prevY + (curY - prevY) * frac
+                    UnifiedBrushRenderer.renderSingleDab(
+                        canvas = canvas,
+                        brush = previewBrush,
+                        x = sxPt,
+                        y = syPt,
+                        tangentDeg = tangentDeg,
+                        pressureNorm = pNorm,
+                        baseColor = drawColor,
+                        isTransparentColor = false,
+                        dabIndex = dabIdx++,
+                        deterministicRandom = true,
+                        procHistory = procHist,
+                        smudgeBitmap = null,
+                        smudgeCarryColorHolder = null
+                    )
+                    traveled += stepSpacingPx
+                }
+                carryDist = segLen - (traveled - stepSpacingPx)
+            } else {
+                carryDist = distLeft
+            }
+            prevX = curX
+            prevY = curY
+        }
+
         canvas.restore()
     }
 
-    // ==========================================================================
-    // SCROLLABLE BRUSH SETS & 5-COLUMN ICON GRID (115922, 115925, 115929)
-    // ==========================================================================
     private fun drawScrollableBrushLibraryGrid(
         canvas: Canvas,
         left: Float,
@@ -386,7 +424,7 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
                 textPaint.textSize = 37f * sx
                 textPaint.textAlign = Paint.Align.LEFT
                 textPaint.isFakeBoldText = false
-                canvas.drawText(set.name, left + 28f * sx, curY + 58f * sy, textPaint)
+                canvas.drawText(ellipsizeText(set.name, textPaint, (right - left) - 220f * sx), left + 28f * sx, curY + 58f * sy, textPaint)
 
                 val pinCx = if (isThisSetSelected) right - 154f * sx else right - 58f * sx
                 val pinCy = curY + 46f * sy
@@ -1035,9 +1073,22 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
             val hInt = colorState.hue.roundToInt()
             val sInt = (colorState.saturation * 100f).roundToInt()
             val lInt = (colorState.lightness * 100f).roundToInt()
-            drawColorChannelSlider(canvas, left, right, slidersTop, sx, sy, "COLOR_H", "H", hInt.toString(), colorState.hue / 360f, Color.rgb(12, 12, 12), Color.rgb(12, 12, 12))
-            drawColorChannelSlider(canvas, left, right, slidersTop + 132f * sy, sx, sy, "COLOR_S", "S", sInt.toString(), colorState.saturation, Color.rgb(12, 12, 12), Color.rgb(12, 12, 12))
-            drawColorChannelSlider(canvas, left, right, slidersTop + 264f * sy, sx, sy, "COLOR_L", "L", lInt.toString(), colorState.lightness, Color.BLACK, Color.WHITE)
+            val effL = colorState.lightness.coerceIn(0.08f, 0.92f)
+            val hSpectrum = intArrayOf(
+                ColorStudioState.hslToColor(0f, 1f, effL),
+                ColorStudioState.hslToColor(60f, 1f, effL),
+                ColorStudioState.hslToColor(120f, 1f, effL),
+                ColorStudioState.hslToColor(180f, 1f, effL),
+                ColorStudioState.hslToColor(240f, 1f, effL),
+                ColorStudioState.hslToColor(300f, 1f, effL),
+                ColorStudioState.hslToColor(360f, 1f, effL)
+            )
+            val sStart = ColorStudioState.hslToColor(colorState.hue, 0f, effL)
+            val sEnd = ColorStudioState.hslToColor(colorState.hue, 1f, effL)
+            val lMid = ColorStudioState.hslToColor(colorState.hue, colorState.saturation, 0.5f)
+            drawMultiStopColorSlider(canvas, left, right, slidersTop, sx, sy, "COLOR_H", "H", hInt.toString(), colorState.hue / 360f, hSpectrum)
+            drawMultiStopColorSlider(canvas, left, right, slidersTop + 132f * sy, sx, sy, "COLOR_S", "S", sInt.toString(), colorState.saturation, intArrayOf(sStart, sEnd))
+            drawMultiStopColorSlider(canvas, left, right, slidersTop + 264f * sy, sx, sy, "COLOR_L", "L", lInt.toString(), colorState.lightness, intArrayOf(Color.BLACK, lMid, Color.WHITE))
         }
     }
 
@@ -1333,7 +1384,13 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
                 subOverlay = if (subOverlay == BrushSubOverlay.SET_SETTINGS) BrushSubOverlay.NONE else BrushSubOverlay.SET_SETTINGS
             }
             "BTN_PINNED_BRUSH_ACTIONS" -> {
-                subOverlay = if (subOverlay == BrushSubOverlay.BRUSH_ACTIONS) BrushSubOverlay.NONE else BrushSubOverlay.BRUSH_ACTIONS
+                subOverlay = when {
+                    subOverlay == BrushSubOverlay.SET_SETTINGS -> BrushSubOverlay.NONE
+                    brushTopTab == BrushModalTopTab.SETTINGS_SLIDERS -> {
+                        if (subOverlay == BrushSubOverlay.BRUSH_ACTIONS) BrushSubOverlay.NONE else BrushSubOverlay.BRUSH_ACTIONS
+                    }
+                    else -> BrushSubOverlay.NONE
+                }
             }
             // Set Settings 4 Actions: Rename Set, Create New Set, Duplicate Brush, Delete Set ("confirm")
             "SET_ACT_RENAME" -> {
@@ -1561,11 +1618,42 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
     }
 
     private fun updateSlFromDiamondTouch(x: Float, y: Float) {
-        val dy = ((y - wheelCy) / diamondHalfDiag).coerceIn(-1f, 1f)
+        val rawDx = (x - wheelCx) / diamondHalfDiag
+        val rawDy = (y - wheelCy) / diamondHalfDiag
+
+        val snapRadius = 0.16f
+        when {
+            hypot(rawDx, rawDy + 1f) < snapRadius || (rawDy <= -0.96f && abs(rawDx) < 0.25f) -> {
+                colorState.lightness = 1.0f
+                colorState.saturation = 0.0f
+                colorState.syncColorFromHsl()
+                return
+            }
+            hypot(rawDx, rawDy - 1f) < snapRadius || (rawDy >= 0.96f && abs(rawDx) < 0.25f) -> {
+                colorState.lightness = 0.0f
+                colorState.saturation = 0.0f
+                colorState.syncColorFromHsl()
+                return
+            }
+            hypot(rawDx - 1f, rawDy) < snapRadius || (rawDx >= 0.94f && abs(rawDy) < 0.28f) -> {
+                colorState.lightness = 0.5f
+                colorState.saturation = 1.0f
+                colorState.syncColorFromHsl()
+                return
+            }
+            hypot(rawDx + 1f, rawDy) < snapRadius || (rawDx <= -0.94f && abs(rawDy) < 0.28f) -> {
+                colorState.lightness = 0.5f
+                colorState.saturation = 0.0f
+                colorState.syncColorFromHsl()
+                return
+            }
+        }
+
+        val dy = rawDy.coerceIn(-1f, 1f)
         val l = ((1f - dy) * 0.5f).coerceIn(0f, 1f)
-        val maxSpanX = (1f - abs(dy)).coerceAtLeast(0.02f) * diamondHalfDiag
-        val dxNorm = ((x - wheelCx) / maxSpanX).coerceIn(-1f, 1f)
-        val s = ((dxNorm + 1f) * 0.5f).coerceIn(0f, 1f)
+        val maxSpanX = (1f - abs(dy)).coerceAtLeast(0.005f)
+        val dxClamped = rawDx.coerceIn(-maxSpanX, maxSpanX)
+        val s = (((dxClamped / maxSpanX) + 1f) * 0.5f).coerceIn(0f, 1f)
         colorState.lightness = l
         colorState.saturation = s
         colorState.syncColorFromHsl()
@@ -1761,27 +1849,35 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
     }
 
     private fun drawTransparentEraserButton(c: Canvas, cx: Float, cy: Float, r: Float, active: Boolean) {
-        fillPaint.color = Color.rgb(92, 92, 92)
-        c.drawCircle(cx, cy, r, fillPaint)
-        // Checkerboard pattern + white eraser block matching 115958.jpg
-        fillPaint.color = Color.rgb(175, 175, 175)
-        val sq = r * 0.28f
-        for (ix in -2..1) {
-            for (iy in -2..1) {
-                if ((ix + iy) % 2 == 0) {
-                    val rx = cx + ix * sq
-                    val ry = cy + iy * sq
-                    if (hypot(rx - cx, ry - cy) < r * 0.78f) {
-                        c.drawRect(rx, ry, rx + sq, ry + sq, fillPaint)
-                    }
-                }
+        val clipCircle = Path().apply { addCircle(cx, cy, r, Path.Direction.CW) }
+        c.save()
+        c.clipPath(clipCircle)
+
+        val sq = (r * 2f) / 6f
+        val startX = cx - r
+        val startY = cy - r
+        for (row in 0..5) {
+            for (col in 0..5) {
+                fillPaint.color = if ((row + col) % 2 == 0) Color.rgb(154, 154, 154) else Color.rgb(66, 66, 66)
+                c.drawRect(startX + col * sq, startY + row * sq, startX + (col + 1) * sq, startY + (row + 1) * sq, fillPaint)
             }
         }
+
+        val cylW = r * 0.82f
+        val cylLeft = cx - cylW * 0.5f
+        val cylRight = cx + cylW * 0.5f
         fillPaint.color = Color.WHITE
-        c.drawRoundRect(RectF(cx - r * 0.38f, cy - r * 0.18f, cx + r * 0.38f, cy + r * 0.65f), 6f, 6f, fillPaint)
+        c.drawRoundRect(RectF(cylLeft, cy - r * 0.26f, cylRight, cy + r * 1.05f), r * 0.16f, r * 0.16f, fillPaint)
+        fillPaint.color = Color.rgb(32, 32, 32)
+        c.drawRect(cylLeft, cy - r * 0.02f, cylRight, cy + r * 0.18f, fillPaint)
+        strokePaint.color = Color.rgb(32, 32, 32)
+        strokePaint.strokeWidth = 2.5f
+        c.drawRoundRect(RectF(cylLeft, cy - r * 0.26f, cylRight, cy + r * 1.05f), r * 0.16f, r * 0.16f, strokePaint)
+        c.restore()
+
         if (active) {
             strokePaint.color = Color.rgb(65, 148, 238)
-            strokePaint.strokeWidth = 5f
+            strokePaint.strokeWidth = 5.5f
             c.drawCircle(cx, cy, r + 4f, strokePaint)
         }
     }

@@ -45,7 +45,7 @@ data class ModUiPalette(
 
 class ModCoreEngine(private val context: Context, private val onStateChanged: () -> Unit) {
 
-    private val prefs = context.getSharedPreferences("sketchbook_mod_core_v3", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("sketchbook_mod_core_v4", Context.MODE_PRIVATE)
     val bundles = mutableListOf<ModFeatureBundle>()
     var activeScriptSource: String = ""
         private set
@@ -60,15 +60,24 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
     }
 
     init {
-        val savedScript = prefs.getString("active_mod_script", null)
-        if (savedScript.isNullOrBlank()) {
-            loadScript(DEFAULT_MULTI_BUNDLE_SCRIPT, saveToPrefs = true)
-        } else {
-            loadScript(savedScript, saveToPrefs = false)
+        // Always ensure built-in starter bundles are present, and merge any saved custom script on top!
+        loadScript(DEFAULT_MULTI_BUNDLE_SCRIPT, saveToPrefs = false, mergeWithExisting = false)
+        val savedCustom = prefs.getString("active_mod_script", null)
+        if (!savedCustom.isNullOrBlank()) {
+            loadScript(savedCustom, saveToPrefs = false, mergeWithExisting = true)
         }
     }
 
-    fun loadScript(scriptText: String, saveToPrefs: Boolean = true): Boolean {
+    /**
+     * Parses a Mod Script. When [mergeWithExisting] is true (default when importing/pasting),
+     * older/existing bundles are preserved in [bundles] while new or updated @bundle blocks
+     * are added or updated seamlessly!
+     */
+    fun loadScript(
+        scriptText: String,
+        saveToPrefs: Boolean = true,
+        mergeWithExisting: Boolean = true
+    ): Boolean {
         val trimmed = scriptText.trim()
         if (trimmed.isEmpty()) {
             lastStatusMessage = "Error: Empty script"
@@ -94,21 +103,62 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
                 }
             }
 
-            bundles.clear()
-            bundles.addAll(parsedBundles)
-            activeScriptSource = trimmed
+            if (!mergeWithExisting) {
+                bundles.clear()
+                bundles.addAll(parsedBundles)
+            } else {
+                for (incoming in parsedBundles) {
+                    val existingIdx = bundles.indexOfFirst { it.id == incoming.id }
+                    if (existingIdx >= 0) {
+                        bundles[existingIdx] = incoming
+                    } else {
+                        bundles.add(0, incoming) // Put newly imported bundles at the top of the Mod Menu!
+                    }
+                }
+            }
+
+            activeScriptSource = rebuildUnifiedDslFromBundles()
 
             if (saveToPrefs) {
-                prefs.edit().putString("active_mod_script", trimmed).apply()
+                prefs.edit().putString("active_mod_script", activeScriptSource).apply()
+                for (b in parsedBundles) {
+                    prefs.edit().putBoolean("bundle_toggle_${b.id}", b.enabled).apply()
+                }
             }
             val totalFns = bundles.fold(0) { acc, item -> acc + item.functions.size }
-            lastStatusMessage = "Loaded ${bundles.size} bundles ($totalFns core functions)"
+            lastStatusMessage = "Active: ${bundles.size} bundles ($totalFns core functions)"
             onStateChanged()
             return true
         } catch (e: Exception) {
             lastStatusMessage = "Script Parse Error: ${e.message}"
             return false
         }
+    }
+
+    private fun rebuildUnifiedDslFromBundles(): String {
+        val sb = StringBuilder()
+        sb.append("# SketchBook OSS - Unified Multi-Bundle Core Mod Script
+
+")
+        for (b in bundles) {
+            sb.append("@bundle id="${b.id}" title="${b.title}" default=${b.enabled} desc="${b.description}"
+")
+            for (fn in b.functions) {
+                sb.append("fn ${fn.type}")
+                for ((k, v) in fn.params) {
+                    if (v.contains(" ") || v.startsWith("#")) {
+                        sb.append(" $k="$v"")
+                    } else {
+                        sb.append(" $k=$v")
+                    }
+                }
+                sb.append("
+")
+            }
+            sb.append("
+")
+        }
+        return sb.toString().trim()
     }
 
     private fun parseDslScript(dsl: String, out: MutableList<ModFeatureBundle>) {
@@ -140,7 +190,7 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
                 flushCurrent()
                 currentFuncs = mutableListOf()
                 val attrs = parseKeyValues(line.removePrefix("@bundle").trim())
-                currentId = attrs["id"] ?: "bundle_${out.size + 1}"
+                currentId = attrs["id"] ?: "bundle_${System.currentTimeMillis()}_${out.size}"
                 currentTitle = attrs["title"] ?: currentId
                 currentDesc = attrs["desc"] ?: "Bundled core functions"
                 currentDefault = (attrs["default"] ?: "false").equals("true", ignoreCase = true)
@@ -206,7 +256,7 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
 
     fun resetToDefaultScript() {
         prefs.edit().clear().apply()
-        loadScript(DEFAULT_MULTI_BUNDLE_SCRIPT, saveToPrefs = true)
+        loadScript(DEFAULT_MULTI_BUNDLE_SCRIPT, saveToPrefs = true, mergeWithExisting = false)
     }
 
     fun getActiveFunctions(type: String): List<ModFunctionSpec> {
@@ -234,9 +284,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
         return false
     }
 
-    /**
-     * Collects all custom Mod Brushes (`fn inject_brush`) from currently enabled Mod Bundles!
-     */
     fun getInjectedModBrushes(): List<SketchBrushItem> {
         val out = mutableListOf<SketchBrushItem>()
         for ((idx, fn) in getActiveFunctions("inject_brush").withIndex()) {
@@ -474,19 +521,19 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
     companion object {
         val DEFAULT_MULTI_BUNDLE_SCRIPT =
             "# SketchBook OSS - Unified Multi-Bundle Core Mod Script\n" +
-            "@bundle id=\"mod_brushes_pack\" title=\"SOTA Mod Brushes (Procedural, Animated & Lotus Nib)\" default=true desc=\"Injects Procedural Synapse Web, Time-Animated Chrono Plasma & Lotus Feather Nib\"\n" +
-            "fn inject_brush id=\"mb_synapse\" name=\"Synapse Web (Procedural)\" mode=\"procedural_web\" size=38 opacity=92 spacing=10 reach=135 branches=3\n" +
-            "fn inject_brush id=\"mb_chrono\" name=\"Chrono Plasma (Time-Animated)\" mode=\"time_animated\" size=46 opacity=95 spacing=14 speed=3.8 wave=14 sparks=3 hue_shift=45\n" +
-            "fn inject_brush id=\"mb_lotus\" name=\"Lotus Crescent Nib (Var. Opacity/Smooth)\" mode=\"custom_harmonic_nib\" size=64 opacity=95 spacing=12 lobes=5 core_opac=96 petal_opac=36 feather_smooth=88\n\n" +
+            "@bundle id=\"mod_brushes_pack\" title=\"SOTA Mod Brushes Pack\" default=true desc=\"Injects Procedural Synapse Web, Time-Animated Chrono Plasma & Lotus Nib\"\n" +
+            "fn inject_brush id=\"mb_synapse\" name=\"Synapse Web\" mode=\"procedural_web\" size=38 opacity=92 spacing=10 reach=135 branches=3\n" +
+            "fn inject_brush id=\"mb_chrono\" name=\"Chrono Plasma\" mode=\"time_animated\" size=46 opacity=95 spacing=14 speed=3.8 wave=14 sparks=3 hue_shift=45\n" +
+            "fn inject_brush id=\"mb_lotus\" name=\"Lotus Crescent Nib\" mode=\"custom_harmonic_nib\" size=64 opacity=95 spacing=12 lobes=5 core_opac=96 petal_opac=36 feather_smooth=88\n\n" +
             "@bundle id=\"obsidian_dark_ui\" title=\"Obsidian Dark Pro UI\" default=false desc=\"Transforms top bar, popups, icons & backdrop into carbon dark mode\"\n" +
             "fn ui_theme topbar=\"#1B1E26\" topbar_active=\"#2B303C\" popup_bg=\"#232731\" popup_header=\"#171A21\" card_bg=\"#2C313E\" input_bg=\"#14171D\" text_primary=\"#ECEFF4\" text_secondary=\"#9AA5B8\" icon_tint=\"#D8DEE9\" accent=\"#00B8D4\" border=\"#383F4E\" backdrop=\"#0F1116\"\n\n" +
             "@bundle id=\"rosegold_velvet_ui\" title=\"Rose-Gold & Espresso UI\" default=false desc=\"Warm luxury rose-gold menus, copper accents & espresso backdrop\"\n" +
             "fn ui_theme topbar=\"#F7ECE8\" topbar_active=\"#EAD5CE\" popup_bg=\"#FAF2EF\" popup_header=\"#EFE0DA\" card_bg=\"#FFFFFF\" input_bg=\"#FFFFFF\" text_primary=\"#3B2321\" text_secondary=\"#8C6560\" icon_tint=\"#6E4742\" accent=\"#D46A6A\" border=\"#DFC4BC\" backdrop=\"#362624\"\n\n" +
-            "@bundle id=\"anim_aurora_fx\" title=\"Animated Aurora & Laser UI FX\" default=false desc=\"60fps flowing aurora shimmer on topbar + laser popup border + dot orbit\"\n" +
+            "@bundle id=\"anim_aurora_fx\" title=\"Animated Aurora & Laser FX\" default=false desc=\"60fps flowing aurora shimmer on topbar + laser popup border + dot orbit\"\n" +
             "fn ui_anim_aurora c1=\"#6600E5FF\" c2=\"#667C4DFF\" c3=\"#66FF4081\"\n" +
             "fn ui_anim_laser_border color=\"#00E5FF\"\n" +
             "fn ui_anim_dot_orbit color=\"#00E5FF\"\n\n" +
-            "@bundle id=\"anim_bokeh_fx\" title=\"Animated Ambient Bokeh Particles\" default=false desc=\"Drifting glowing ambient particles across the workspace backdrop\"\n" +
+            "@bundle id=\"anim_bokeh_fx\" title=\"Animated Ambient Bokeh\" default=false desc=\"Drifting glowing ambient particles across the workspace backdrop\"\n" +
             "fn ui_anim_particles color=\"#00E5FF\" count=22\n\n" +
             "@bundle id=\"composition_guides\" title=\"Composition & Grid Guides\" default=false desc=\"Rule-of-thirds + 12-div subgrid + safe frame\"\n" +
             "fn canvas_grid divisions=3 color=\"#662B6CB0\" stroke=2.5\n" +

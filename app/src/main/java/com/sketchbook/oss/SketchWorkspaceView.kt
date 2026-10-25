@@ -187,7 +187,7 @@ class SketchWorkspaceView(
     private val clearXfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
     private val multiplyXfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
     private val addXfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
-    private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
     private var statusBannerText: String? = null
     private var statusBannerExpiry: Long = 0L
@@ -318,9 +318,10 @@ class SketchWorkspaceView(
         canvas.concat(viewMatrix)
 
         val bmpRect = RectF(0f, 0f, bmp.width.toFloat(), bmp.height.toFloat())
+        canvas.clipRect(bmpRect)
         bgPaint.style = Paint.Style.FILL
         bgPaint.color = pal.paperTint
-        canvas.drawRect(bmpRect, bgPaint)
+        canvas.drawRect(0.5f, 0.5f, bmp.width - 0.5f, bmp.height - 0.5f, bgPaint)
         canvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
         renderTemporalAnimatedStrokes(canvas, timeSec)
 
@@ -336,9 +337,7 @@ class SketchWorkspaceView(
         }
 
         // 4. Draw Top Menu Bar (Hidden when full-height Brush/Color Sheet is open, matching 115925.jpg!)
-        if (popupState != TopPopupState.BRUSH_MENU && popupState != TopPopupState.COLOR_MENU) {
-            drawTopMenuBar(canvas, w, topBarH, sideFrame, pal, timeSec)
-        }
+        drawTopMenuBar(canvas, w, topBarH, sideFrame, pal, timeSec)
 
         // 5. Draw Active Popup Menu or 1-to-1 Brush / Color Modal
         currentPopupBounds.setEmpty()
@@ -1252,7 +1251,7 @@ class SketchWorkspaceView(
             textPaint.textSize = 32f * sx
             textPaint.isFakeBoldText = true
             textPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText(bundle.title, left + 26f * sx, ry + 48f * sx, textPaint)
+            canvas.drawText(ellipsize(bundle.title, textPaint, panelW - 195f * sx), left + 26f * sx, ry + 48f * sx, textPaint)
             textPaint.isFakeBoldText = false
 
             subTextPaint.color = pal.textSecondary
@@ -1633,6 +1632,7 @@ class SketchWorkspaceView(
         }
 
         procHistoryPts.clear()
+        strokeCarryDist = 0f
         val activeBrush = brushAndColorModal.selectedBrush()
         if (activeBrush.modMode == "time_animated" && !brushAndColorModal.colorState.isColorlessEraser) {
             val spd = activeBrush.modParams["speed"]?.toFloatOrNull() ?: 3.8f
@@ -1669,6 +1669,9 @@ class SketchWorkspaceView(
      * Multi-Type SOTA Brush Dab Renderer supporting Standard, Marker, Smudge, Glow & Eraser,
      * plus Basic (Size, Opacity) and Advanced (Pressure, Stamp, Nib, Randomness) parameters.
      */
+    private var strokeCarryDist: Float = 0f
+    private var dabCounter: Int = 0
+
     private fun stampSelectedBrushSegment(p0: PointF, p1: PointF, p2: PointF, rawPressure: Float) {
         val bmp = project.ensureCanvasBitmap()
         val c = Canvas(bmp)
@@ -1683,238 +1686,98 @@ class SketchWorkspaceView(
         val segDist = hypot(mid2X - mid1X, mid2Y - mid1Y)
         lastStrokeSpeed = lastStrokeSpeed * 0.7f + segDist * 0.3f
 
-        val pNorm = if (rawPressure > 0.01f && rawPressure != 1.0f) rawPressure.coerceIn(0.1f, 1f) else (1f - (lastStrokeSpeed / 85f).coerceIn(0f, 0.55f))
+        val pNorm = if (rawPressure > 0.01f && rawPressure != 1.0f) {
+            rawPressure.coerceIn(0.08f, 1.0f)
+        } else {
+            (1f - (lastStrokeSpeed / 85f).coerceIn(0f, 0.55f))
+        }
+
         val sizePressScale = (brush.sizeLightPressure + (brush.sizeHeavyPressure - brush.sizeLightPressure) * pNorm) / 100f
-        val opacPressScale = (brush.opacityLightPressure + (brush.opacityHeavyPressure - brush.opacityLightPressure) * pNorm) / 100f
+        val curRadius = (brush.size * 0.5f * sizePressScale.coerceIn(0.10f, 1.5f)).coerceAtLeast(1.0f)
+        val stepSpacingPx = max(1.0f, curRadius * 2f * (brush.spacing / 100f).coerceIn(0.03f, 2.5f))
+        val tangentDeg = Math.toDegrees(atan2((mid2Y - mid1Y).toDouble(), (mid2X - mid1X).toDouble())).toFloat()
+        val smudgeHolder = intArrayOf(smudgeCarryColor)
 
-        val baseRadius = (brush.size * 0.5f * sizePressScale.coerceIn(0.15f, 1.5f)).coerceAtLeast(1f)
-        val baseAlpha = ((brush.opacity / 100f) * opacPressScale.coerceIn(0.1f, 1f) * 255f).roundToInt().coerceIn(4, 255)
-
-        val stepDist = max(1f, baseRadius * (brush.spacing / 50f).coerceIn(0.08f, 1.8f))
-        val steps = max(1, (segDist / stepDist).toInt())
-
-        val isEraser = (brush.brushType == SketchBrushType.ERASER || colState.isColorlessEraser)
-        val baseColor = colState.currentColor
-        val cr = Color.red(baseColor)
-        val cg = Color.green(baseColor)
-        val cb = Color.blue(baseColor)
-
-        for (i in 0..steps) {
-            val t = i.toFloat() / steps.toFloat()
-            val invT = 1f - t
-            var x = invT * invT * mid1X + 2f * invT * t * p1.x + t * t * mid2X
-            var y = invT * invT * mid1Y + 2f * invT * t * p1.y + t * t * mid2Y
-
-            // Apply Scatter Jitter
-            if (brush.scatterJitter > 1f) {
-                val sc = baseRadius * (brush.scatterJitter / 50f)
-                x += (Random.nextFloat() - 0.5f) * sc * 2f
-                y += (Random.nextFloat() - 0.5f) * sc * 2f
-            }
-
-            // Apply Size & Opacity Jitter
-            val rJit = if (brush.sizeJitter > 1f) 1f - Random.nextFloat() * (brush.sizeJitter / 110f) else 1f
-            val oJit = if (brush.opacityJitter > 1f) 1f - Random.nextFloat() * (brush.opacityJitter / 110f) else 1f
-            val rad = (baseRadius * rJit).coerceAtLeast(1f)
-            val dabAlpha = (baseAlpha * oJit).roundToInt().coerceIn(2, 255)
-
-            if (isEraser) {
-                strokePaint.xfermode = clearXfermode
-                strokePaint.shader = null
-                strokePaint.color = Color.argb(dabAlpha, 0, 0, 0)
-                c.drawCircle(x, y, rad, strokePaint)
-                strokePaint.xfermode = null
-                continue
-            }
-
-            
-            if (brush.modMode == "time_animated") {
+        if (segDist < 0.001f && strokeCarryDist == 0f) {
+            if (brush.modMode == "time_animated" && !colState.isColorlessEraser) {
                 val ts = activeTemporalStroke
-                if (ts != null) {
-                    val dx = mid2X - mid1X
-                    val dy = mid2Y - mid1Y
-                    val len = hypot(dx, dy).coerceAtLeast(0.001f)
-                    val nx = -dy / len
-                    val ny = dx / len
-                    if (ts.nodes.isEmpty() || hypot(x - ts.nodes.last().x, y - ts.nodes.last().y) >= max(2.5f, rad * 0.45f)) {
+                if (ts != null && mid1X in 0f..bmp.width.toFloat() && mid1Y in 0f..bmp.height.toFloat()) {
+                    val dabAlpha = ((brush.opacity / 100f) * 255f).roundToInt().coerceIn(8, 255)
+                    ts.nodes.add(TemporalDabNode(mid1X, mid1Y, 0f, 1f, curRadius, dabAlpha, 0f))
+                }
+            } else {
+                UnifiedBrushRenderer.renderSingleDab(
+                    canvas = c,
+                    brush = brush,
+                    x = mid1X,
+                    y = mid1Y,
+                    tangentDeg = tangentDeg,
+                    pressureNorm = pNorm,
+                    baseColor = colState.currentColor,
+                    isTransparentColor = colState.isColorlessEraser,
+                    dabIndex = dabCounter++,
+                    deterministicRandom = false,
+                    procHistory = procHistoryPts,
+                    smudgeBitmap = bmp,
+                    smudgeCarryColorHolder = smudgeHolder
+                )
+                smudgeCarryColor = smudgeHolder[0]
+            }
+            strokeCarryDist = 0.001f
+            return
+        }
+
+        var distLeft = strokeCarryDist + segDist
+        if (distLeft >= stepSpacingPx && segDist > 0.0001f) {
+            var traveled = stepSpacingPx - strokeCarryDist
+            while (traveled <= segDist) {
+                val t = (traveled / segDist).coerceIn(0f, 1f)
+                val invT = 1f - t
+                val x = invT * invT * mid1X + 2f * invT * t * p1.x + t * t * mid2X
+                val y = invT * invT * mid1Y + 2f * invT * t * p1.y + t * t * mid2Y
+
+                if (brush.modMode == "time_animated" && !colState.isColorlessEraser) {
+                    val ts = activeTemporalStroke
+                    if (ts != null && x in 0f..bmp.width.toFloat() && y in 0f..bmp.height.toFloat()) {
+                        val dx = mid2X - mid1X
+                        val dy = mid2Y - mid1Y
+                        val len = hypot(dx, dy).coerceAtLeast(0.001f)
+                        val dabAlpha = ((brush.opacity / 100f) * 255f).roundToInt().coerceIn(8, 255)
                         ts.nodes.add(
                             TemporalDabNode(
-                                x = x,
-                                y = y,
-                                nx = nx,
-                                ny = ny,
-                                radius = rad,
+                                x = x.coerceIn(0f, bmp.width.toFloat()),
+                                y = y.coerceIn(0f, bmp.height.toFloat()),
+                                nx = -dy / len,
+                                ny = dx / len,
+                                radius = curRadius,
                                 alpha = dabAlpha,
                                 phase = ts.nodes.size * 0.35f
                             )
                         )
                     }
+                } else {
+                    UnifiedBrushRenderer.renderSingleDab(
+                        canvas = c,
+                        brush = brush,
+                        x = x,
+                        y = y,
+                        tangentDeg = tangentDeg,
+                        pressureNorm = pNorm,
+                        baseColor = colState.currentColor,
+                        isTransparentColor = colState.isColorlessEraser,
+                        dabIndex = dabCounter++,
+                        deterministicRandom = false,
+                        procHistory = procHistoryPts,
+                        smudgeBitmap = bmp,
+                        smudgeCarryColorHolder = smudgeHolder
+                    )
+                    smudgeCarryColor = smudgeHolder[0]
                 }
-                continue
+                traveled += stepSpacingPx
             }
-
-            if (brush.modMode == "procedural_web") {
-                val reach = (brush.modParams["reach"]?.toFloatOrNull() ?: 135f) * (brush.size / 38f).coerceIn(0.4f, 3f)
-                val branches = (brush.modParams["branches"]?.toIntOrNull() ?: 3).coerceIn(1, 8)
-                if (procHistoryPts.isEmpty() || hypot(x - procHistoryPts.last().x, y - procHistoryPts.last().y) >= 5f) {
-                    procHistoryPts.add(PointF(x, y))
-                    if (procHistoryPts.size > 160) procHistoryPts.removeAt(0)
-                }
-                strokePaint.xfermode = null
-                strokePaint.shader = null
-                strokePaint.style = Paint.Style.STROKE
-                strokePaint.strokeWidth = (rad * 0.14f).coerceAtLeast(1.4f)
-                // Connect gossamer web filaments to nearby historical vertices
-                for (hIdx in max(0, procHistoryPts.size - 45) until procHistoryPts.size - 1) {
-                    val hp = procHistoryPts[hIdx]
-                    val d = hypot(x - hp.x, y - hp.y)
-                    if (d in 8f..reach) {
-                        val falloff = (1f - d / reach)
-                        val webAlpha = (dabAlpha * falloff * falloff * 0.48f).toInt().coerceIn(4, 180)
-                        strokePaint.color = Color.argb(webAlpha, cr, cg, cb)
-                        c.drawLine(x, y, hp.x, hp.y, strokePaint)
-                    }
-                }
-                // Procedural fractal lightning tendrils
-                if (i % 2 == 0) {
-                    for (b in 0 until branches) {
-                        val ang = Random.nextFloat() * (Math.PI.toFloat() * 2f)
-                        val bLen = rad * (0.8f + Random.nextFloat() * 1.4f)
-                        val mx = x + cos(ang) * bLen * 0.5f + (Random.nextFloat() - 0.5f) * rad * 0.5f
-                        val my = y + sin(ang) * bLen * 0.5f + (Random.nextFloat() - 0.5f) * rad * 0.5f
-                        val ex = x + cos(ang) * bLen
-                        val ey = y + sin(ang) * bLen
-                        strokePaint.color = Color.argb((dabAlpha * 0.55f).toInt().coerceIn(8, 200), cr, cg, cb)
-                        c.drawLine(x, y, mx, my, strokePaint)
-                        c.drawLine(mx, my, ex, ey, strokePaint)
-                    }
-                }
-                strokePaint.style = Paint.Style.FILL
-                strokePaint.color = Color.argb(dabAlpha, cr, cg, cb)
-                c.drawCircle(x, y, (rad * 0.24f).coerceAtLeast(1.5f), strokePaint)
-                continue
-            }
-
-            if (brush.modMode == "custom_harmonic_nib") {
-                val lobes = (brush.modParams["lobes"]?.toIntOrNull() ?: 5).coerceIn(3, 12)
-                val coreOpac = (brush.modParams["core_opac"]?.toFloatOrNull() ?: 96f) / 100f
-                val petalOpac = (brush.modParams["petal_opac"]?.toFloatOrNull() ?: 36f) / 100f
-                val featherSmooth = (brush.modParams["feather_smooth"]?.toFloatOrNull() ?: 88f) / 100f
-                val tangentDeg = Math.toDegrees(atan2((mid2Y - mid1Y).toDouble(), (mid2X - mid1X).toDouble())).toFloat()
-
-                strokePaint.xfermode = null
-                // Zone 3: Wide Gaussian-style smooth feathered outer aura
-                val outerR = rad * (1.25f + featherSmooth * 0.65f)
-                strokePaint.shader = RadialGradient(
-                    x, y, outerR.coerceAtLeast(2f),
-                    intArrayOf(
-                        Color.argb((dabAlpha * 0.18f).toInt().coerceIn(4, 70), cr, cg, cb),
-                        Color.argb((dabAlpha * 0.06f).toInt().coerceIn(2, 35), cr, cg, cb),
-                        Color.TRANSPARENT
-                    ),
-                    floatArrayOf(0f, 0.6f, 1f),
-                    Shader.TileMode.CLAMP
-                )
-                c.drawCircle(x, y, outerR, strokePaint)
-                strokePaint.shader = null
-
-                // Zone 2: Harmonic polar rosette petals (medium smoothness & translucent glaze)
-                c.save()
-                c.translate(x, y)
-                c.rotate(tangentDeg + brush.rotation)
-                val petalAlpha = (dabAlpha * petalOpac).toInt().coerceIn(6, 180)
-                strokePaint.color = Color.argb(petalAlpha, cr, cg, cb)
-                for (L in 0 until lobes) {
-                    val aRad = L * 2.0 * Math.PI / lobes
-                    val px = cos(aRad).toFloat() * rad * 0.68f
-                    val py = sin(aRad).toFloat() * rad * 0.68f
-                    c.save()
-                    c.translate(px, py)
-                    c.rotate(Math.toDegrees(aRad).toFloat())
-                    c.drawOval(RectF(-rad * 0.48f, -rad * 0.22f, rad * 0.48f, rad * 0.22f), strokePaint)
-                    c.restore()
-                }
-
-                // Zone 1: Crisp high-opacity inner crescent core
-                val coreAlpha = (dabAlpha * coreOpac).toInt().coerceIn(15, 255)
-                strokePaint.color = Color.argb(coreAlpha, cr, cg, cb)
-                c.drawOval(RectF(-rad * 0.42f, -rad * 0.18f, rad * 0.42f, rad * 0.18f), strokePaint)
-                c.restore()
-                continue
-            }
-
-            when (brush.brushType) {
-                SketchBrushType.SMUDGE -> {
-                    val sxInt = x.toInt().coerceIn(0, bmp.width - 1)
-                    val syInt = y.toInt().coerceIn(0, bmp.height - 1)
-                    val canvasCol = bmp.getPixel(sxInt, syInt)
-                    if (Color.alpha(canvasCol) > 15) {
-                        val mix = 0.25f
-                        val mr = (Color.red(smudgeCarryColor) * (1f - mix) + Color.red(canvasCol) * mix).toInt()
-                        val mg = (Color.green(smudgeCarryColor) * (1f - mix) + Color.green(canvasCol) * mix).toInt()
-                        val mb = (Color.blue(smudgeCarryColor) * (1f - mix) + Color.blue(canvasCol) * mix).toInt()
-                        smudgeCarryColor = Color.rgb(mr, mg, mb)
-                    }
-                    strokePaint.xfermode = null
-                    strokePaint.shader = null
-                    strokePaint.color = Color.argb((dabAlpha * 0.45f).toInt().coerceIn(8, 160), Color.red(smudgeCarryColor), Color.green(smudgeCarryColor), Color.blue(smudgeCarryColor))
-                    c.drawCircle(x, y, rad, strokePaint)
-                }
-
-                SketchBrushType.MARKER -> {
-                    strokePaint.xfermode = multiplyXfermode
-                    strokePaint.shader = null
-                    strokePaint.color = Color.argb((dabAlpha * 0.35f).toInt().coerceIn(6, 140), cr, cg, cb)
-                    c.save()
-                    c.translate(x, y)
-                    c.rotate(brush.rotation)
-                    val ry = rad * (brush.roundness / 100f).coerceIn(0.18f, 1f)
-                    c.drawOval(RectF(-rad, -ry, rad, ry), strokePaint)
-                    c.restore()
-                    strokePaint.xfermode = null
-                }
-
-                SketchBrushType.GLOW -> {
-                    strokePaint.xfermode = null
-                    strokePaint.shader = null
-                    strokePaint.color = Color.argb((dabAlpha * 0.16f).toInt().coerceIn(4, 70), cr, cg, cb)
-                    c.drawCircle(x, y, rad * 2.1f, strokePaint)
-                    strokePaint.color = Color.argb((dabAlpha * 0.38f).toInt().coerceIn(10, 140), cr, cg, cb)
-                    c.drawCircle(x, y, rad * 1.25f, strokePaint)
-                    strokePaint.color = Color.argb(dabAlpha, 255, 255, 255)
-                    c.drawCircle(x, y, rad * 0.45f, strokePaint)
-                }
-
-                else -> { // STANDARD (supports soft airbrush hardness, elliptical nib, and grain)
-                    strokePaint.xfermode = null
-                    if (brush.hardness < 55f) {
-                        val innerStop = (brush.hardness / 100f).coerceIn(0.05f, 0.85f)
-                        val softAlpha = (dabAlpha * 0.42f).toInt().coerceIn(4, 180)
-                        strokePaint.shader = RadialGradient(
-                            x, y, rad.coerceAtLeast(2f),
-                            intArrayOf(Color.argb(softAlpha, cr, cg, cb), Color.argb(softAlpha / 2, cr, cg, cb), Color.TRANSPARENT),
-                            floatArrayOf(0f, innerStop, 1f),
-                            Shader.TileMode.CLAMP
-                        )
-                    } else {
-                        strokePaint.shader = null
-                        val effAlpha = if (brush.grainStrength > 25f) (dabAlpha * 0.65f).toInt().coerceAtLeast(8) else dabAlpha
-                        strokePaint.color = Color.argb(effAlpha, cr, cg, cb)
-                    }
-
-                    if (brush.roundness < 92f) {
-                        c.save()
-                        c.translate(x, y)
-                        c.rotate(brush.rotation)
-                        val ry = rad * (brush.roundness / 100f).coerceIn(0.15f, 1f)
-                        c.drawOval(RectF(-rad, -ry, rad, ry), strokePaint)
-                        c.restore()
-                    } else {
-                        c.drawCircle(x, y, rad, strokePaint)
-                    }
-                    strokePaint.shader = null
-                }
-            }
+            strokeCarryDist = segDist - (traveled - stepSpacingPx)
+        } else {
+            strokeCarryDist = distLeft
         }
     }
 
