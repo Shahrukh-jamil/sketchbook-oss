@@ -26,16 +26,16 @@ object SketchIcons {
         isFakeBoldText = true
     }
 
-    fun drawTopIcon1Menu(c: Canvas, cx: Float, cy: Float, u: Float) {
+    fun drawTopIcon1Menu(c: Canvas, cx: Float, cy: Float, u: Float, tint: Int = Color.rgb(108, 108, 108)) {
         val w = u * 0.48f
         val h = u * 0.36f
         val left = cx - w / 2f
         val top = cy - h / 2f
-        strokePaint.color = Color.rgb(108, 108, 108)
+        strokePaint.color = tint
         strokePaint.strokeWidth = u * 0.032f
         c.drawRect(left, top, left + w, top + h, strokePaint)
 
-        fillPaint.color = Color.rgb(108, 108, 108)
+        fillPaint.color = tint
         for (i in 0..2) {
             val ry = top + h * (0.25f + i * 0.25f)
             val dotR = u * 0.022f
@@ -44,12 +44,12 @@ object SketchIcons {
         }
     }
 
-    fun drawTopIconUndoRedo(c: Canvas, cx: Float, cy: Float, u: Float, isRedo: Boolean, enabled: Boolean) {
+    fun drawTopIconUndoRedo(c: Canvas, cx: Float, cy: Float, u: Float, isRedo: Boolean, enabled: Boolean, tint: Int = Color.rgb(118, 118, 118)) {
         c.save()
         c.translate(cx, cy)
         if (isRedo) c.scale(-1f, 1f)
 
-        fillPaint.color = if (enabled) Color.rgb(118, 118, 118) else Color.rgb(200, 200, 200)
+        fillPaint.color = if (enabled) tint else Color.argb(95, Color.red(tint), Color.green(tint), Color.blue(tint))
         val s = u * 0.34f
         val p = Path()
         p.moveTo(-s * 0.95f, s * 0.05f)
@@ -63,8 +63,8 @@ object SketchIcons {
         c.restore()
     }
 
-    fun drawTopIcon4Grid(c: Canvas, cx: Float, cy: Float, u: Float) {
-        strokePaint.color = Color.rgb(108, 108, 108)
+    fun drawTopIcon4Grid(c: Canvas, cx: Float, cy: Float, u: Float, tint: Int = Color.rgb(108, 108, 108)) {
+        strokePaint.color = tint
         strokePaint.strokeWidth = u * 0.025f
         val cell = u * 0.11f
         val gap = u * 0.042f
@@ -80,11 +80,10 @@ object SketchIcons {
         }
     }
 
-    fun drawTopIcon5PencilPen(c: Canvas, cx: Float, cy: Float, u: Float) {
-        val color = Color.rgb(104, 104, 104)
-        strokePaint.color = color
+    fun drawTopIcon5PencilPen(c: Canvas, cx: Float, cy: Float, u: Float, tint: Int = Color.rgb(104, 104, 104)) {
+        strokePaint.color = tint
         strokePaint.strokeWidth = u * 0.028f
-        fillPaint.color = color
+        fillPaint.color = tint
 
         val px = cx - u * 0.15f
         val topY = cy - u * 0.25f
@@ -148,8 +147,7 @@ object SketchIcons {
         c.drawCircle(cx, cy, radius - ringWidth / 2f, strokePaint)
     }
 
-    fun drawTopIcon7Layers(c: Canvas, cx: Float, cy: Float, u: Float) {
-        val color = Color.rgb(108, 108, 108)
+    fun drawTopIcon7Layers(c: Canvas, cx: Float, cy: Float, u: Float, tint: Int = Color.rgb(108, 108, 108), bgMask: Int = Color.rgb(239, 239, 239)) {
         val rx = u * 0.25f
         val ry = u * 0.11f
 
@@ -161,7 +159,7 @@ object SketchIcons {
             lineTo(cx - rx, by)
             close()
         }
-        fillPaint.color = color
+        fillPaint.color = tint
         c.drawPath(botPath, fillPaint)
 
         val ty = cy - u * 0.065f
@@ -172,14 +170,14 @@ object SketchIcons {
             lineTo(cx - rx, ty)
             close()
         }
-        fillPaint.color = Color.rgb(239, 239, 239)
+        fillPaint.color = bgMask
         c.drawPath(topPath, fillPaint)
-        strokePaint.color = color
+        strokePaint.color = tint
         strokePaint.strokeWidth = u * 0.028f
         c.drawPath(topPath, strokePaint)
     }
 
-    fun drawTopIcon8Viewfinder(c: Canvas, cx: Float, cy: Float, u: Float) {
+    fun drawTopIcon8Viewfinder(c: Canvas, cx: Float, cy: Float, u: Float, tint: Int = Color.rgb(108, 108, 108)) {
         val w = u * 0.46f
         val h = u * 0.33f
         val l = cx - w / 2f
@@ -187,7 +185,7 @@ object SketchIcons {
         val r = cx + w / 2f
         val b = cy + h / 2f
 
-        strokePaint.color = Color.rgb(108, 108, 108)
+        strokePaint.color = tint
         strokePaint.strokeWidth = u * 0.026f
         c.drawRect(l, t, r, b, strokePaint)
 
@@ -247,8 +245,7 @@ object SketchIcons {
         }
     }
 
-    fun drawSaveIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
-        val color = Color.rgb(95, 95, 95)
+    fun drawSaveIcon(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(95, 95, 95)) {
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.10f
         val w = size * 0.78f
@@ -261,8 +258,7 @@ object SketchIcons {
         c.drawCircle(cx + w * 0.25f, cy + size * 0.23f, size * 0.045f, fillPaint)
     }
 
-    fun drawImportIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
-        val color = Color.rgb(95, 95, 95)
+    fun drawImportIcon(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(95, 95, 95)) {
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.11f
         val w = size * 0.78f
@@ -275,8 +271,7 @@ object SketchIcons {
         c.drawLine(cx + size * 0.20f, cy - size * 0.04f, cx, cy + size * 0.16f, strokePaint)
     }
 
-    fun drawGearIcon(c: Canvas, cx: Float, cy: Float, size: Float, filled: Boolean = true) {
-        val color = Color.rgb(98, 98, 98)
+    fun drawGearIcon(c: Canvas, cx: Float, cy: Float, size: Float, filled: Boolean = true, color: Int = Color.rgb(98, 98, 98)) {
         strokePaint.color = color
         val outerR = size * 0.42f
         val innerR = size * 0.20f
@@ -296,8 +291,7 @@ object SketchIcons {
         }
     }
 
-    fun drawShareIcon(c: Canvas, cx: Float, cy: Float, size: Float, withStar: Boolean) {
-        val color = Color.rgb(95, 95, 95)
+    fun drawShareIcon(c: Canvas, cx: Float, cy: Float, size: Float, withStar: Boolean, color: Int = Color.rgb(95, 95, 95)) {
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.10f
         val w = size * 0.74f
@@ -332,8 +326,7 @@ object SketchIcons {
         c.drawPath(p, fillPaint)
     }
 
-    fun drawModMenuIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
-        val color = Color.rgb(90, 90, 90)
+    fun drawModMenuIcon(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(90, 90, 90)) {
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.10f
         fillPaint.color = color
@@ -347,8 +340,7 @@ object SketchIcons {
         }
     }
 
-    fun drawProjectNameIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
-        val color = Color.rgb(95, 95, 95)
+    fun drawProjectNameIcon(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(95, 95, 95)) {
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.10f
         val w = size * 0.72f
@@ -359,8 +351,7 @@ object SketchIcons {
         c.drawLine(cx - w * 0.25f, cy + h * 0.28f, cx + w * 0.05f, cy + h * 0.28f, strokePaint)
     }
 
-    fun drawCanvasRotateIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
-        val color = Color.rgb(110, 110, 110)
+    fun drawCanvasRotateIcon(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(110, 110, 110)) {
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.09f
         val s = size * 0.36f
@@ -379,9 +370,8 @@ object SketchIcons {
         c.drawLine(ax + aw, ay - aw, ax, ay, strokePaint)
     }
 
-    fun drawLinkRatioIcon(c: Canvas, cx: Float, cy: Float, size: Float, locked: Boolean) {
-        val color = if (locked) Color.rgb(55, 116, 205) else Color.rgb(96, 96, 96)
-        strokePaint.color = color
+    fun drawLinkRatioIcon(c: Canvas, cx: Float, cy: Float, size: Float, locked: Boolean, accentColor: Int = Color.rgb(55, 116, 205), unlockedColor: Int = Color.rgb(96, 96, 96)) {
+        strokePaint.color = if (locked) accentColor else unlockedColor
         strokePaint.strokeWidth = size * 0.13f
         strokePaint.strokeCap = Paint.Cap.ROUND
 
@@ -399,8 +389,8 @@ object SketchIcons {
         strokePaint.strokeCap = Paint.Cap.SQUARE
     }
 
-    fun drawReorderIcon(c: Canvas, cx: Float, cy: Float, size: Float, active: Boolean = false) {
-        val color = if (active) Color.rgb(55, 116, 205) else Color.rgb(105, 105, 105)
+    fun drawReorderIcon(c: Canvas, cx: Float, cy: Float, size: Float, active: Boolean = false, tint: Int = Color.rgb(105, 105, 105)) {
+        val color = if (active) Color.rgb(55, 116, 205) else tint
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.09f
         val w = size * 0.48f
@@ -428,8 +418,8 @@ object SketchIcons {
         c.drawLine(cx + w * 0.16f, cy - h * 0.12f, cx + w * 0.16f, cy + h * 0.34f, strokePaint)
     }
 
-    fun drawPhoneScreenIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
-        strokePaint.color = Color.rgb(95, 95, 95)
+    fun drawPhoneScreenIcon(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(95, 95, 95)) {
+        strokePaint.color = color
         strokePaint.strokeWidth = size * 0.08f
         val w = size * 0.54f
         val h = size * 0.88f
@@ -437,8 +427,8 @@ object SketchIcons {
         c.drawLine(cx - w * 0.18f, cy + h * 0.36f, cx + w * 0.18f, cy + h * 0.36f, strokePaint)
     }
 
-    fun drawLastCanvasIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
-        strokePaint.color = Color.rgb(95, 95, 95)
+    fun drawLastCanvasIcon(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(95, 95, 95)) {
+        strokePaint.color = color
         strokePaint.strokeWidth = size * 0.075f
         val s = size * 0.64f
         c.drawRect(cx - s * 0.55f, cy - s * 0.50f, cx + s * 0.35f, cy + s * 0.30f, strokePaint)
@@ -449,8 +439,7 @@ object SketchIcons {
         c.drawLine(cx - s * 0.55f, cy + s * 0.46f, cx + s * 0.35f, cy + s * 0.46f, strokePaint)
     }
 
-    fun drawPictureSaveIcon(c: Canvas, cx: Float, cy: Float, size: Float, isCopy: Boolean) {
-        val color = Color.rgb(98, 98, 98)
+    fun drawPictureSaveIcon(c: Canvas, cx: Float, cy: Float, size: Float, isCopy: Boolean, color: Int = Color.rgb(98, 98, 98), bgMask: Int = Color.rgb(243, 243, 243)) {
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.08f
         fillPaint.color = color
@@ -461,7 +450,7 @@ object SketchIcons {
 
         if (isCopy) {
             c.drawRect(cx - s / 2f - ox, cy - s / 2f - oy, cx + s / 2f - ox, cy + s / 2f - oy, strokePaint)
-            fillPaint.color = Color.rgb(243, 243, 243)
+            fillPaint.color = bgMask
             c.drawRect(cx - s / 2f + ox, cy - s / 2f + oy, cx + s / 2f + ox, cy + s / 2f + oy, fillPaint)
             fillPaint.color = color
         }
@@ -483,8 +472,8 @@ object SketchIcons {
         c.drawPath(mPath, fillPaint)
     }
 
-    fun drawFolderIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
-        strokePaint.color = Color.rgb(98, 98, 98)
+    fun drawFolderIcon(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(98, 98, 98)) {
+        strokePaint.color = color
         strokePaint.strokeWidth = size * 0.09f
         val w = size * 0.82f
         val h = size * 0.58f
@@ -502,8 +491,7 @@ object SketchIcons {
         c.drawPath(p, strokePaint)
     }
 
-    fun drawFileFormatIcon(c: Canvas, cx: Float, cy: Float, size: Float, label: String, stacked: Boolean, starred: Boolean) {
-        val color = Color.rgb(92, 92, 92)
+    fun drawFileFormatIcon(c: Canvas, cx: Float, cy: Float, size: Float, label: String, stacked: Boolean, starred: Boolean, color: Int = Color.rgb(92, 92, 92), bgMask: Int = Color.rgb(243, 243, 243)) {
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.055f
         val w = size * 0.64f
@@ -514,7 +502,7 @@ object SketchIcons {
                 val off = k * size * 0.07f
                 c.drawRect(cx - w / 2f + off, cy - h / 2f + off, cx + w / 2f + off, cy + h / 2f + off, strokePaint)
             }
-            fillPaint.color = Color.rgb(243, 243, 243)
+            fillPaint.color = bgMask
             c.drawRect(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f, fillPaint)
             c.drawRect(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f, strokePaint)
             textPaint.color = color

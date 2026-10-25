@@ -4,11 +4,15 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Shader
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.sin
 
 data class ModFunctionSpec(
     val type: String,
@@ -23,17 +27,34 @@ data class ModFeatureBundle(
     val functions: List<ModFunctionSpec>
 )
 
+data class ModUiPalette(
+    val workspaceBackdrop: Int = Color.rgb(127, 127, 127),
+    val topBarBg: Int = Color.rgb(239, 239, 239),
+    val topBarActiveSlot: Int = Color.rgb(220, 220, 220),
+    val popupBg: Int = Color.rgb(243, 243, 243),
+    val popupHeaderBg: Int = Color.rgb(236, 236, 236),
+    val cardBg: Int = Color.rgb(249, 249, 249),
+    val inputBg: Int = Color.WHITE,
+    val textPrimary: Int = Color.rgb(20, 20, 20),
+    val textSecondary: Int = Color.rgb(100, 100, 100),
+    val iconTint: Int = Color.rgb(104, 104, 104),
+    val accentColor: Int = Color.rgb(55, 116, 205),
+    val borderColor: Int = Color.rgb(205, 205, 205),
+    val paperTint: Int = Color.WHITE
+)
+
 class ModCoreEngine(private val context: Context, private val onStateChanged: () -> Unit) {
 
-    private val prefs = context.getSharedPreferences("sketchbook_mod_core", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("sketchbook_mod_core_v2", Context.MODE_PRIVATE)
     val bundles = mutableListOf<ModFeatureBundle>()
     var activeScriptSource: String = ""
         private set
     var lastStatusMessage: String = "Core Mod Engine Ready"
 
     private val overlayPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val animPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(210, 30, 30, 30)
+        color = Color.argb(215, 30, 30, 30)
         textSize = 28f
         isFakeBoldText = true
     }
@@ -81,7 +102,7 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
                 prefs.edit().putString("active_mod_script", trimmed).apply()
             }
             val totalFns = bundles.fold(0) { acc, item -> acc + item.functions.size }
-            lastStatusMessage = "Loaded ${bundles.size} feature bundles ($totalFns functions)"
+            lastStatusMessage = "Loaded ${bundles.size} bundles ($totalFns core functions)"
             onStateChanged()
             return true
         } catch (e: Exception) {
@@ -175,17 +196,12 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
         return result
     }
 
-    fun setBundleEnabled(bundleId: String, enabled: Boolean) {
-        val b = bundles.find { it.id == bundleId } ?: return
-        b.enabled = enabled
-        prefs.edit().putBoolean("bundle_toggle_${b.id}", enabled).apply()
-        lastStatusMessage = "${b.title}: ${if (enabled) "ENABLED" else "DISABLED"}"
-        onStateChanged()
-    }
-
     fun toggleBundle(bundleId: String) {
         val b = bundles.find { it.id == bundleId } ?: return
-        setBundleEnabled(bundleId, !b.enabled)
+        b.enabled = !b.enabled
+        prefs.edit().putBoolean("bundle_toggle_${b.id}", b.enabled).apply()
+        lastStatusMessage = "${b.title}: ${if (b.enabled) "ON" else "OFF"}"
+        onStateChanged()
     }
 
     fun resetToDefaultScript() {
@@ -207,37 +223,45 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
         return list
     }
 
-    fun getWorkspaceColorOverride(defaultColor: Int): Int {
-        val themeFns = getActiveFunctions("workspace_theme")
-        if (themeFns.isNotEmpty()) {
-            val hex = themeFns.last().params["backdrop"]
-            if (!hex.isNullOrEmpty()) {
-                return try { Color.parseColor(hex) } catch (_: Exception) { defaultColor }
+    fun hasActiveAnimations(): Boolean {
+        for (b in bundles) {
+            if (b.enabled) {
+                for (fn in b.functions) {
+                    if (fn.type.startsWith("ui_anim_")) return true
+                }
             }
         }
-        return defaultColor
+        return false
     }
 
-    fun getTopBarColorOverride(defaultColor: Int): Int {
-        val themeFns = getActiveFunctions("workspace_theme")
-        if (themeFns.isNotEmpty()) {
-            val hex = themeFns.last().params["topbar"]
-            if (!hex.isNullOrEmpty()) {
-                return try { Color.parseColor(hex) } catch (_: Exception) { defaultColor }
-            }
-        }
-        return defaultColor
+    private fun parseHexOrDefault(hex: String?, defaultColor: Int): Int {
+        if (hex.isNullOrBlank()) return defaultColor
+        return try { Color.parseColor(hex) } catch (_: Exception) { defaultColor }
     }
 
-    fun getCanvasPaperTintOverride(defaultColor: Int): Int {
-        val tintFns = getActiveFunctions("paper_tint")
-        if (tintFns.isNotEmpty()) {
-            val hex = tintFns.last().params["color"]
-            if (!hex.isNullOrEmpty()) {
-                return try { Color.parseColor(hex) } catch (_: Exception) { defaultColor }
-            }
+    fun resolveUiPalette(): ModUiPalette {
+        var pal = ModUiPalette()
+        for (fn in getActiveFunctions("ui_theme")) {
+            val p = fn.params
+            pal = pal.copy(
+                workspaceBackdrop = parseHexOrDefault(p["backdrop"], pal.workspaceBackdrop),
+                topBarBg = parseHexOrDefault(p["topbar"], pal.topBarBg),
+                topBarActiveSlot = parseHexOrDefault(p["topbar_active"], pal.topBarActiveSlot),
+                popupBg = parseHexOrDefault(p["popup_bg"], pal.popupBg),
+                popupHeaderBg = parseHexOrDefault(p["popup_header"], pal.popupHeaderBg),
+                cardBg = parseHexOrDefault(p["card_bg"], pal.cardBg),
+                inputBg = parseHexOrDefault(p["input_bg"], pal.inputBg),
+                textPrimary = parseHexOrDefault(p["text_primary"], pal.textPrimary),
+                textSecondary = parseHexOrDefault(p["text_secondary"], pal.textSecondary),
+                iconTint = parseHexOrDefault(p["icon_tint"], pal.iconTint),
+                accentColor = parseHexOrDefault(p["accent"], pal.accentColor),
+                borderColor = parseHexOrDefault(p["border"], pal.borderColor)
+            )
         }
-        return defaultColor
+        for (fn in getActiveFunctions("paper_tint")) {
+            pal = pal.copy(paperTint = parseHexOrDefault(fn.params["color"], pal.paperTint))
+        }
+        return pal
     }
 
     fun getInjectedPresets(): List<CanvasPreset> {
@@ -251,13 +275,110 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
         return out
     }
 
+    // --------------------------------------------------------------------------
+    // PREMIUM 60FPS ANIMATED UI EFFECTS
+    // --------------------------------------------------------------------------
+    fun renderTopBarAnimatedEffects(canvas: Canvas, left: Float, top: Float, right: Float, bottom: Float, timeSec: Float) {
+        val w = right - left
+        // 1. Flowing Aurora Topbar Shimmer
+        for (fn in getActiveFunctions("ui_anim_aurora")) {
+            val c1 = parseHexOrDefault(fn.params["c1"], Color.argb(110, 0, 229, 255))
+            val c2 = parseHexOrDefault(fn.params["c2"], Color.argb(110, 124, 77, 255))
+            val c3 = parseHexOrDefault(fn.params["c3"], Color.argb(110, 255, 64, 129))
+            val shift = (sin(timeSec * 2.2f) * 0.5f + 0.5f) * w
+            animPaint.style = Paint.Style.FILL
+            animPaint.shader = LinearGradient(
+                left - w * 0.5f + shift, top,
+                left + w * 0.8f + shift, bottom,
+                intArrayOf(c1, c2, c3, c1),
+                null,
+                Shader.TileMode.MIRROR
+            )
+            canvas.drawRect(left, top, right, bottom, animPaint)
+            animPaint.shader = null
+        }
+
+        // 2. Traveling Specular Laser Line along Bottom of Top Bar
+        for (fn in getActiveFunctions("ui_anim_laser_border")) {
+            val beamColor = parseHexOrDefault(fn.params["color"], Color.rgb(0, 229, 255))
+            val beamW = w * 0.32f
+            val pos = ((timeSec * 0.65f) % 1.0f) * (w + beamW) - beamW * 0.5f
+            animPaint.style = Paint.Style.FILL
+            animPaint.shader = LinearGradient(
+                left + pos - beamW / 2f, bottom - 4f,
+                left + pos + beamW / 2f, bottom,
+                intArrayOf(Color.TRANSPARENT, beamColor, Color.WHITE, beamColor, Color.TRANSPARENT),
+                floatArrayOf(0f, 0.35f, 0.5f, 0.65f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(left, bottom - 5f, right, bottom, animPaint)
+            animPaint.shader = null
+        }
+    }
+
+    fun renderWorkspaceAnimatedEffects(canvas: Canvas, w: Float, h: Float, topBarH: Float, dotCx: Float, dotCy: Float, dotR: Float, timeSec: Float) {
+        // 1. Floating Ambient Bokeh / Cyber Particles in Workspace
+        for (fn in getActiveFunctions("ui_anim_particles")) {
+            val baseColor = parseHexOrDefault(fn.params["color"], Color.rgb(0, 229, 255))
+            val count = (fn.params["count"]?.toIntOrNull() ?: 18).coerceIn(4, 40)
+            animPaint.style = Paint.Style.FILL
+            val r = Color.red(baseColor)
+            val g = Color.green(baseColor)
+            val b = Color.blue(baseColor)
+
+            for (i in 0 until count) {
+                val seed = (i + 1) * 37.7f
+                val px = ((sin(timeSec * (0.25f + (i % 5) * 0.06f) + seed) * 0.5f + 0.5f) * w)
+                val py = topBarH + ((cos(timeSec * (0.18f + (i % 7) * 0.05f) + seed * 1.3f) * 0.5f + 0.5f) * (h - topBarH))
+                val rad = (4f + (i % 4) * 3.5f) * (w / 1080f)
+                val pulseAlpha = (50 + (sin(timeSec * 3f + i) * 35f).toInt()).coerceIn(15, 110)
+                animPaint.color = Color.argb(pulseAlpha, r, g, b)
+                canvas.drawCircle(px, py, rad, animPaint)
+            }
+        }
+
+        // 2. Orbiting Energy Rings around Bottom Lagoon Dot
+        for (fn in getActiveFunctions("ui_anim_dot_orbit")) {
+            val ringColor = parseHexOrDefault(fn.params["color"], Color.rgb(0, 229, 255))
+            animPaint.style = Paint.Style.STROKE
+            animPaint.strokeWidth = 3f * (w / 1080f)
+            val pulseR = dotR * (1.45f + 0.25f * sin(timeSec * 4.0f))
+            animPaint.color = ringColor
+            animPaint.alpha = 180
+            val oval = RectF(dotCx - pulseR, dotCy - pulseR, dotCx + pulseR, dotCy + pulseR)
+            val startAngle = (timeSec * 140f) % 360f
+            canvas.drawArc(oval, startAngle, 110f, false, animPaint)
+            canvas.drawArc(oval, startAngle + 180f, 110f, false, animPaint)
+        }
+    }
+
+    fun renderPopupAnimatedBorder(canvas: Canvas, bounds: RectF, timeSec: Float) {
+        if (bounds.isEmpty) return
+        for (fn in getActiveFunctions("ui_anim_laser_border")) {
+            val c1 = parseHexOrDefault(fn.params["color"], Color.rgb(0, 229, 255))
+            val c2 = Color.rgb(160, 100, 255)
+            val cx = bounds.centerX() + cos(timeSec * 3.0f) * bounds.width() * 0.5f
+            val cy = bounds.centerY() + sin(timeSec * 3.0f) * bounds.height() * 0.5f
+            animPaint.style = Paint.Style.STROKE
+            animPaint.strokeWidth = 3.5f
+            animPaint.shader = LinearGradient(
+                bounds.left, bounds.top, cx, cy,
+                intArrayOf(c1, Color.WHITE, c2, c1),
+                null,
+                Shader.TileMode.MIRROR
+            )
+            canvas.drawRect(bounds, animPaint)
+            animPaint.shader = null
+        }
+    }
+
     fun renderCanvasOverlays(canvas: Canvas, rect: RectF, project: SketchProjectState) {
         for (fn in getActiveFunctions("canvas_grid")) {
             val divs = (fn.params["divisions"]?.toIntOrNull() ?: 3).coerceIn(2, 64)
             val colorStr = fn.params["color"] ?: "#550077CC"
             overlayPaint.style = Paint.Style.STROKE
             overlayPaint.strokeWidth = (fn.params["stroke"]?.toFloatOrNull() ?: 2f)
-            overlayPaint.color = try { Color.parseColor(colorStr) } catch (_: Exception) { Color.argb(90, 0, 120, 215) }
+            overlayPaint.color = parseHexOrDefault(colorStr, Color.argb(90, 0, 120, 215))
             overlayPaint.pathEffect = null
 
             val stepX = rect.width() / divs
@@ -274,7 +395,7 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             val colorStr = fn.params["color"] ?: "#66E65100"
             overlayPaint.style = Paint.Style.STROKE
             overlayPaint.strokeWidth = 2.5f
-            overlayPaint.color = try { Color.parseColor(colorStr) } catch (_: Exception) { Color.argb(110, 230, 81, 0) }
+            overlayPaint.color = parseHexOrDefault(colorStr, Color.argb(110, 230, 81, 0))
             overlayPaint.pathEffect = DashPathEffect(floatArrayOf(14f, 10f), 0f)
 
             val cx = rect.centerX()
@@ -320,6 +441,16 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
     companion object {
         val DEFAULT_MULTI_BUNDLE_SCRIPT =
             "# SketchBook OSS - Unified Multi-Bundle Core Mod Script\n" +
+            "@bundle id=\"obsidian_dark_ui\" title=\"Obsidian Dark Pro UI\" default=false desc=\"Transforms top bar, popups, icons & backdrop into carbon dark mode\"\n" +
+            "fn ui_theme topbar=\"#1B1E26\" topbar_active=\"#2B303C\" popup_bg=\"#232731\" popup_header=\"#171A21\" card_bg=\"#2C313E\" input_bg=\"#14171D\" text_primary=\"#ECEFF4\" text_secondary=\"#9AA5B8\" icon_tint=\"#D8DEE9\" accent=\"#00B8D4\" border=\"#383F4E\" backdrop=\"#0F1116\"\n\n" +
+            "@bundle id=\"rosegold_velvet_ui\" title=\"Rose-Gold & Espresso UI\" default=false desc=\"Warm luxury rose-gold menus, copper accents & espresso backdrop\"\n" +
+            "fn ui_theme topbar=\"#F7ECE8\" topbar_active=\"#EAD5CE\" popup_bg=\"#FAF2EF\" popup_header=\"#EFE0DA\" card_bg=\"#FFFFFF\" input_bg=\"#FFFFFF\" text_primary=\"#3B2321\" text_secondary=\"#8C6560\" icon_tint=\"#6E4742\" accent=\"#D46A6A\" border=\"#DFC4BC\" backdrop=\"#362624\"\n\n" +
+            "@bundle id=\"anim_aurora_fx\" title=\"Animated Aurora & Laser UI FX\" default=false desc=\"60fps flowing aurora shimmer on topbar + laser popup border + dot orbit\"\n" +
+            "fn ui_anim_aurora c1=\"#6600E5FF\" c2=\"#667C4DFF\" c3=\"#66FF4081\"\n" +
+            "fn ui_anim_laser_border color=\"#00E5FF\"\n" +
+            "fn ui_anim_dot_orbit color=\"#00E5FF\"\n\n" +
+            "@bundle id=\"anim_bokeh_fx\" title=\"Animated Ambient Bokeh Particles\" default=false desc=\"Drifting glowing ambient particles across the workspace backdrop\"\n" +
+            "fn ui_anim_particles color=\"#00E5FF\" count=22\n\n" +
             "@bundle id=\"composition_guides\" title=\"Composition & Grid Guides\" default=false desc=\"Rule-of-thirds + 12-div subgrid + safe frame\"\n" +
             "fn canvas_grid divisions=3 color=\"#662B6CB0\" stroke=2.5\n" +
             "fn canvas_grid divisions=12 color=\"#282B6CB0\" stroke=1.0\n" +
@@ -330,9 +461,8 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             "fn inject_preset name=\"4K UHD\" w=3840 h=2160\n" +
             "fn inject_preset name=\"Cinema 21:9\" w=2560 h=1080\n" +
             "fn inject_preset name=\"Square 2K\" w=2048 h=2048\n\n" +
-            "@bundle id=\"warm_sketchpad\" title=\"Warm Cream Sketchpad Paper\" default=false desc=\"Tints canvas paper to archival cream & darkens backdrop\"\n" +
-            "fn paper_tint color=\"#FDFBF2\"\n" +
-            "fn workspace_theme backdrop=\"#585858\" topbar=\"#E6E6E6\"\n\n" +
+            "@bundle id=\"warm_sketchpad\" title=\"Warm Cream Sketchpad Paper\" default=false desc=\"Tints canvas paper to archival cream\"\n" +
+            "fn paper_tint color=\"#FDFBF2\"\n\n" +
             "@bundle id=\"telemetry_hud\" title=\"Live Canvas Telemetry HUD\" default=false desc=\"Displays project name, dimensions, Mpx & layer limit\"\n" +
             "fn canvas_hud mode=\"compact\""
     }

@@ -99,31 +99,22 @@ object ProjectStorageManager {
                 safeBase
             }
 
-            val maxDim = 4096
-            val scale = if (project.width > maxDim || project.height > maxDim) {
-                maxDim.toFloat() / maxOf(project.width, project.height).toFloat()
-            } else 1f
-            val bmpW = (project.width * scale).toInt().coerceAtLeast(1)
-            val bmpH = (project.height * scale).toInt().coerceAtLeast(1)
-
-            val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
-            val c = Canvas(bmp)
+            val layerBmp = project.ensureCanvasBitmap()
+            val outBmp = Bitmap.createBitmap(layerBmp.width, layerBmp.height, Bitmap.Config.ARGB_8888)
+            val c = Canvas(outBmp)
             c.drawColor(paperColor)
-            project.importedBitmap?.let { src ->
-                val dstRect = android.graphics.Rect(0, 0, bmpW, bmpH)
-                c.drawBitmap(src, null, dstRect, null)
-            }
+            c.drawBitmap(layerBmp, 0f, 0f, null)
 
-            val savedLocation = savePngToMediaStoreOrDisk(context, bmp, finalName)
+            val savedLocation = savePngToMediaStoreOrDisk(context, outBmp, finalName)
 
             val tiffDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "Projects")
             if (!tiffDir.exists()) tiffDir.mkdirs()
             val tiffFile = File(tiffDir, "$finalName.tif")
             FileOutputStream(tiffFile).use { fos ->
-                writeSketchbookTiff(bmp, fos, project.width, project.height)
+                writeSketchbookTiff(outBmp, fos, project.width, project.height)
             }
 
-            bmp.recycle()
+            outBmp.recycle()
             Result.success(savedLocation)
         } catch (e: Exception) {
             Result.failure(e)
