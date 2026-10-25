@@ -835,13 +835,13 @@ class SketchWorkspaceView(
                 cy = cy,
                 size = 64f * sx,
                 label = fmt.first,
-                stacked = fmt.second,
+                stacked = fmt.third,
                 starred = (fmt.first == "PDF")
             )
             textPaint.color = Color.rgb(18, 18, 18)
             textPaint.textSize = 39f * sx
             textPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText(fmt.third, left + 190f * sx, cy + 14f * sx, textPaint)
+            canvas.drawText(fmt.second, left + 190f * sx, cy + 14f * sx, textPaint)
 
             if (idx < formats.size - 1) {
                 borderPaint.color = Color.rgb(225, 225, 225)
@@ -1061,7 +1061,7 @@ class SketchWorkspaceView(
                 }
 
                 if (abs(y - touchDownY) > 18f * sx || abs(x - touchDownX) > 18f * sx) {
-                    cancelLongPress()
+                    abortPresetLongPress()
                     if (popupState == TopPopupState.NEW_SKETCH &&
                         newSketchTab == NewSketchTab.LIST_PRESETS &&
                         presetScrollAreaBounds.contains(touchDownX, touchDownY)
@@ -1075,7 +1075,7 @@ class SketchWorkspaceView(
             }
 
             MotionEvent.ACTION_UP -> {
-                cancelLongPress()
+                abortPresetLongPress()
                 if (isDraggingPreset) {
                     isDraggingPreset = false
                     draggedPresetIndex = -1
@@ -1090,7 +1090,7 @@ class SketchWorkspaceView(
             }
 
             MotionEvent.ACTION_CANCEL -> {
-                cancelLongPress()
+                abortPresetLongPress()
                 isDraggingPreset = false
                 isScrollingPresets = false
                 invalidate()
@@ -1100,7 +1100,7 @@ class SketchWorkspaceView(
         return super.onTouchEvent(event)
     }
 
-    private fun cancelLongPress() {
+    private fun abortPresetLongPress() {
         val r = longPressRunnable
         if (r != null) {
             removeCallbacks(r)
