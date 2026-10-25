@@ -80,6 +80,29 @@ enum class BrushIconStyle {
     TEXTURE_GRID
 }
 
+data class TemporalDabNode(
+    val x: Float,
+    val y: Float,
+    val nx: Float,
+    val ny: Float,
+    val radius: Float,
+    val alpha: Int,
+    val phase: Float
+)
+
+data class TemporalAnimatedStroke(
+    val color: Int,
+    val speed: Float,
+    val waveAmp: Float,
+    val sparkCount: Int,
+    val hueShift: Float,
+    val nodes: MutableList<TemporalDabNode> = mutableListOf()
+) {
+    fun deepCopy(): TemporalAnimatedStroke {
+        return copy(nodes = nodes.toMutableList())
+    }
+}
+
 data class SketchBrushItem(
     val id: String,
     var name: String,
@@ -87,23 +110,21 @@ data class SketchBrushItem(
     var brushType: SketchBrushType = SketchBrushType.STANDARD,
     var size: Float = 24f,
     var opacity: Float = 100f,
-    // Advanced -> Pressure
     var sizeHeavyPressure: Float = 100f,
     var sizeLightPressure: Float = 25f,
     var opacityHeavyPressure: Float = 100f,
     var opacityLightPressure: Float = 40f,
-    // Advanced -> Stamp
     var spacing: Float = 12f,
     var roundness: Float = 100f,
     var rotation: Float = 0f,
-    // Advanced -> Nib
     var hardness: Float = 85f,
     var grainStrength: Float = 0f,
-    // Advanced -> Randomness
     var sizeJitter: Float = 0f,
     var opacityJitter: Float = 0f,
     var scatterJitter: Float = 0f,
-    // Factory defaults for Reset button
+    // Mod-specific custom behavior ("", "procedural_web", "time_animated", "custom_harmonic_nib")
+    var modMode: String = "",
+    var modParams: Map<String, String> = emptyMap(),
     val defType: SketchBrushType = brushType,
     val defSize: Float = size,
     val defOpacity: Float = opacity,
@@ -139,16 +160,16 @@ data class SketchBrushSet(
 )
 
 class ColorStudioState {
-    var hue: Float = 0f          // 0..360
-    var saturation: Float = 0.5f // 0..1
-    var lightness: Float = 0.0f  // 0..1
+    var hue: Float = 0f
+    var saturation: Float = 0.5f
+    var lightness: Float = 0.0f
     var currentColor: Int = Color.BLACK
     var previousColor: Int = Color.BLACK
     var isColorlessEraser: Boolean = false
     var isEyedropperActive: Boolean = false
-    var topTabIndex: Int = 0     // 0 = Wheel, 1 = Swatch Grid, 2 = Image Picker
-    var bottomModeIndex: Int = 0 // 0 = HSL, 1 = RGB, 2 = Swatches, 3 = Shuffle, 4 = Tonal Strip
-    var harmonyMode: Int = 0     // 0 = Complementary, 1 = Triadic, 2 = Analogous, 3 = Split-Comp
+    var topTabIndex: Int = 0
+    var bottomModeIndex: Int = 0
+    var harmonyMode: Int = 0
 
     val colorHistory = mutableListOf(
         Color.rgb(18, 22, 238),
@@ -189,27 +210,27 @@ class ColorStudioState {
     fun computeHarmonyStrip(): List<Int> {
         val out = mutableListOf<Int>()
         when (harmonyMode % 4) {
-            0 -> { // Complementary shades
+            0 -> {
                 for (i in 0..5) {
                     val h = if (i < 3) hue else (hue + 180f) % 360f
                     val l = (0.25f + (i % 3) * 0.25f).coerceIn(0.08f, 0.92f)
                     out.add(hslToColor(h, saturation.coerceAtLeast(0.35f), l))
                 }
             }
-            1 -> { // Triadic
+            1 -> {
                 for (i in 0..5) {
                     val h = (hue + (i / 2) * 120f) % 360f
                     val l = if (i % 2 == 0) 0.42f else 0.68f
                     out.add(hslToColor(h, saturation.coerceAtLeast(0.5f), l))
                 }
             }
-            2 -> { // Analogous
+            2 -> {
                 for (i in 0..5) {
                     val h = (hue - 50f + i * 20f + 360f) % 360f
                     out.add(hslToColor(h, saturation.coerceAtLeast(0.45f), lightness.coerceIn(0.25f, 0.75f)))
                 }
             }
-            else -> { // Split-Complementary
+            else -> {
                 val angles = floatArrayOf(0f, 15f, 150f, 180f, 210f, 345f)
                 for (a in angles) {
                     out.add(hslToColor((hue + a) % 360f, saturation.coerceAtLeast(0.5f), 0.52f))
@@ -309,17 +330,7 @@ object DefaultBrushCatalog {
             SketchBrushItem("t7", "Crosshatch Stamp", BrushIconStyle.TEXTURE_HATCH, SketchBrushType.STANDARD, 68f, 85f, spacing = 22f, grainStrength = 80f),
             SketchBrushItem("t8", "Frost Crystal", BrushIconStyle.TEXTURE_FROST, SketchBrushType.STANDARD, 72f, 88f, spacing = 28f, sizeJitter = 25f, grainStrength = 75f),
             SketchBrushItem("t9", "Radial Burst", BrushIconStyle.TEXTURE_SPLATTER, SketchBrushType.STANDARD, 80f, 92f, spacing = 30f, scatterJitter = 20f, grainStrength = 70f),
-            SketchBrushItem("t10", "Dark Nebula", BrushIconStyle.TEXTURE_FRACTAL, SketchBrushType.GLOW, 90f, 78f, hardness = 25f, grainStrength = 65f),
-            SketchBrushItem("t11", "Starlight Glow", BrushIconStyle.TEXTURE_FRACTAL, SketchBrushType.GLOW, 64f, 95f, hardness = 30f),
-            SketchBrushItem("t12", "Ribbon Track", BrushIconStyle.CHISEL_MARKER, SketchBrushType.MARKER, 45f, 90f, roundness = 20f, grainStrength = 50f),
-            SketchBrushItem("t13", "Organic Flora", BrushIconStyle.TEXTURE_FROST, SketchBrushType.STANDARD, 70f, 85f, scatterJitter = 18f, grainStrength = 65f),
-            SketchBrushItem("t14", "Moss & Vine", BrushIconStyle.TEXTURE_FROST, SketchBrushType.STANDARD, 64f, 88f, sizeJitter = 30f, grainStrength = 72f),
-            SketchBrushItem("t15", "Halftone Diagonal", BrushIconStyle.TEXTURE_NOISE, SketchBrushType.STANDARD, 58f, 95f, grainStrength = 85f),
-            SketchBrushItem("t16", "Stipple Noise", BrushIconStyle.TEXTURE_NOISE, SketchBrushType.STANDARD, 62f, 90f, spacing = 18f, grainStrength = 90f),
-            SketchBrushItem("t17", "Lace Pattern", BrushIconStyle.TEXTURE_HATCH, SketchBrushType.STANDARD, 66f, 85f, grainStrength = 75f),
-            SketchBrushItem("t18", "Cyber Matrix Grid", BrushIconStyle.TEXTURE_GRID, SketchBrushType.GLOW, 74f, 92f, spacing = 20f, grainStrength = 80f),
-            SketchBrushItem("t19", "Soft Target Stamp", BrushIconStyle.TEXTURE_SPLATTER, SketchBrushType.STANDARD, 52f, 75f, spacing = 35f),
-            SketchBrushItem("t20", "Ring Stamp", BrushIconStyle.TEXTURE_SPLATTER, SketchBrushType.STANDARD, 56f, 80f, spacing = 35f)
+            SketchBrushItem("t10", "Dark Nebula", BrushIconStyle.TEXTURE_FRACTAL, SketchBrushType.GLOW, 90f, 78f, hardness = 25f, grainStrength = 65f)
         )
 
         return mutableListOf(
@@ -336,6 +347,11 @@ data class CanvasPreset(
     var height: Int
 )
 
+private data class ProjectSnapshot(
+    val bitmap: Bitmap,
+    val temporalStrokes: List<TemporalAnimatedStroke>
+)
+
 class SketchProjectState(
     var name: String = nextDefaultName(),
     var width: Int = 1080,
@@ -345,8 +361,9 @@ class SketchProjectState(
     var lastSavedPath: String? = null
 ) {
     var canvasBitmap: Bitmap? = null
-    private val undoStack = ArrayDeque<Bitmap>()
-    private val redoStack = ArrayDeque<Bitmap>()
+    val temporalStrokes = mutableListOf<TemporalAnimatedStroke>()
+    private val undoStack = ArrayDeque<ProjectSnapshot>()
+    private val redoStack = ArrayDeque<ProjectSnapshot>()
 
     fun ensureCanvasBitmap(): Bitmap {
         val targetW = width.coerceIn(1, 8192)
@@ -371,19 +388,25 @@ class SketchProjectState(
         val current = canvasBitmap ?: return
         if (current.isRecycled) return
         try {
-            val copy = current.copy(Bitmap.Config.ARGB_8888, true)
-            undoStack.addLast(copy)
+            val copyBmp = current.copy(Bitmap.Config.ARGB_8888, true)
+            val copyTemporal = temporalStrokes.map { it.deepCopy() }
+            undoStack.addLast(ProjectSnapshot(copyBmp, copyTemporal))
+
             val bytesPerBmp = (current.width.toLong() * current.height.toLong() * 4L).coerceAtLeast(1L)
             val maxSteps = (160_000_000L / bytesPerBmp).toInt().coerceIn(3, 18)
             while (undoStack.size > maxSteps) {
-                undoStack.removeFirst().recycle()
+                val old = undoStack.removeFirst()
+                if (!old.bitmap.isRecycled) old.bitmap.recycle()
             }
-            for (b in redoStack) {
-                if (!b.isRecycled) b.recycle()
+            for (s in redoStack) {
+                if (!s.bitmap.isRecycled) s.bitmap.recycle()
             }
             redoStack.clear()
         } catch (_: OutOfMemoryError) {
-            if (undoStack.isNotEmpty()) undoStack.removeFirst().recycle()
+            if (undoStack.isNotEmpty()) {
+                val old = undoStack.removeFirst()
+                if (!old.bitmap.isRecycled) old.bitmap.recycle()
+            }
         }
     }
 
@@ -394,9 +417,12 @@ class SketchProjectState(
         if (undoStack.isEmpty()) return false
         val current = canvasBitmap
         if (current != null && !current.isRecycled) {
-            redoStack.addLast(current)
+            redoStack.addLast(ProjectSnapshot(current, temporalStrokes.map { it.deepCopy() }))
         }
-        canvasBitmap = undoStack.removeLast()
+        val prev = undoStack.removeLast()
+        canvasBitmap = prev.bitmap
+        temporalStrokes.clear()
+        temporalStrokes.addAll(prev.temporalStrokes)
         isDirty = true
         return true
     }
@@ -405,9 +431,12 @@ class SketchProjectState(
         if (redoStack.isEmpty()) return false
         val current = canvasBitmap
         if (current != null && !current.isRecycled) {
-            undoStack.addLast(current)
+            undoStack.addLast(ProjectSnapshot(current, temporalStrokes.map { it.deepCopy() }))
         }
-        canvasBitmap = redoStack.removeLast()
+        val next = redoStack.removeLast()
+        canvasBitmap = next.bitmap
+        temporalStrokes.clear()
+        temporalStrokes.addAll(next.temporalStrokes)
         isDirty = true
         return true
     }
@@ -415,8 +444,9 @@ class SketchProjectState(
     fun releaseAll() {
         canvasBitmap?.let { if (!it.isRecycled) it.recycle() }
         canvasBitmap = null
-        for (b in undoStack) if (!b.isRecycled) b.recycle()
-        for (b in redoStack) if (!b.isRecycled) b.recycle()
+        temporalStrokes.clear()
+        for (s in undoStack) if (!s.bitmap.isRecycled) s.bitmap.recycle()
+        for (s in redoStack) if (!s.bitmap.isRecycled) s.bitmap.recycle()
         undoStack.clear()
         redoStack.clear()
     }

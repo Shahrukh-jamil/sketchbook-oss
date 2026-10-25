@@ -123,6 +123,62 @@ class SketchWorkspaceView(
     private var lastStrokeSpeed = 0f
     private var smudgeCarryColor: Int = Color.WHITE
 
+    
+    private val procHistoryPts = mutableListOf<PointF>()
+    private var activeTemporalStroke: TemporalAnimatedStroke? = null
+
+    private fun renderTemporalAnimatedStrokes(canvas: Canvas, timeSec: Float) {
+        if (project.temporalStrokes.isEmpty()) return
+        for (ts in project.temporalStrokes) {
+            val baseHsl = ColorStudioState.colorToHsl(ts.color)
+            val nCount = ts.nodes.size
+            for (i in 0 until nCount) {
+                val nd = ts.nodes[i]
+                val wave = sin(timeSec * ts.speed + nd.phase) * ts.waveAmp
+                val animX = nd.x + nd.nx * wave
+                val animY = nd.y + nd.ny * wave
+                val pulse = 0.78f + 0.28f * sin(timeSec * (ts.speed * 1.3f) + nd.phase * 1.7f)
+                val curRad = (nd.radius * pulse).coerceAtLeast(1.5f)
+
+                val shiftedHue = (baseHsl[0] + sin(timeSec * 2f + nd.phase) * ts.hueShift + 360f) % 360f
+                val glowCol = ColorStudioState.hslToColor(shiftedHue, baseHsl[1].coerceAtLeast(0.75f), baseHsl[2].coerceIn(0.35f, 0.7f))
+                val gr = Color.red(glowCol)
+                val gg = Color.green(glowCol)
+                val gb = Color.blue(glowCol)
+
+                // Outer breathing plasma halo
+                strokePaint.shader = RadialGradient(
+                    animX, animY, curRad * 2.2f,
+                    intArrayOf(
+                        Color.argb((nd.alpha * 0.42f).toInt().coerceIn(8, 160), gr, gg, gb),
+                        Color.argb((nd.alpha * 0.14f).toInt().coerceIn(4, 70), gr, gg, gb),
+                        Color.TRANSPARENT
+                    ),
+                    floatArrayOf(0f, 0.55f, 1f),
+                    Shader.TileMode.CLAMP
+                )
+                canvas.drawCircle(animX, animY, curRad * 2.2f, strokePaint)
+                strokePaint.shader = null
+
+                // Crisp hot core
+                strokePaint.color = Color.argb(nd.alpha, 255, 255, 255)
+                canvas.drawCircle(animX, animY, curRad * 0.42f, strokePaint)
+
+                // Orbiting firefly sparks on every 4th node
+                if (i % 4 == 0 && ts.sparkCount > 0) {
+                    for (sp in 0 until ts.sparkCount) {
+                        val ang = timeSec * (ts.speed * 1.4f + sp) + nd.phase + sp * 2.1f
+                        val orbitR = curRad * (1.25f + 0.55f * sin(timeSec * 2.5f + sp))
+                        val sx = animX + cos(ang) * orbitR
+                        val sy = animY + sin(ang) * orbitR
+                        strokePaint.color = Color.argb((nd.alpha * 0.85f).toInt().coerceIn(20, 240), 255, 255, 220)
+                        canvas.drawCircle(sx, sy, (curRad * 0.22f).coerceAtLeast(1.8f), strokePaint)
+                    }
+                }
+            }
+        }
+    }
+
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         strokeCap = Paint.Cap.ROUND
@@ -266,6 +322,7 @@ class SketchWorkspaceView(
         bgPaint.color = pal.paperTint
         canvas.drawRect(bmpRect, bgPaint)
         canvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
+        renderTemporalAnimatedStrokes(canvas, timeSec)
 
         modEngine.renderCanvasOverlays(canvas, bmpRect, project)
         canvas.restore()
@@ -335,7 +392,7 @@ class SketchWorkspaceView(
             canvas.drawText(bannerMsg, w / 2f, by + bh * 0.64f, textPaint)
         }
 
-        if (modEngine.hasActiveAnimations()) {
+        if (modEngine.hasActiveAnimations() || project.temporalStrokes.isNotEmpty()) {
             postInvalidateOnAnimation()
         }
     }
@@ -1575,6 +1632,19 @@ class SketchWorkspaceView(
             brushAndColorModal.colorState.pushToHistory(brushAndColorModal.colorState.currentColor)
         }
 
+        procHistoryPts.clear()
+        val activeBrush = brushAndColorModal.selectedBrush()
+        if (activeBrush.modMode == "time_animated" && !brushAndColorModal.colorState.isColorlessEraser) {
+            val spd = activeBrush.modParams["speed"]?.toFloatOrNull() ?: 3.8f
+            val wv = activeBrush.modParams["wave"]?.toFloatOrNull() ?: 14f
+            val spk = (activeBrush.modParams["sparks"]?.toIntOrNull() ?: 3).coerceIn(0, 6)
+            val hShift = activeBrush.modParams["hue_shift"]?.toFloatOrNull() ?: 45f
+            val ts = TemporalAnimatedStroke(brushAndColorModal.colorState.currentColor, spd, wv, spk, hShift)
+            project.temporalStrokes.add(ts)
+            activeTemporalStroke = ts
+        } else {
+            activeTemporalStroke = null
+        }
         val first = pendingStrokeSamples[0].pt
         prevCanvasPt.set(first)
         lastCanvasPt.set(first)
@@ -1654,6 +1724,122 @@ class SketchWorkspaceView(
                 strokePaint.color = Color.argb(dabAlpha, 0, 0, 0)
                 c.drawCircle(x, y, rad, strokePaint)
                 strokePaint.xfermode = null
+                continue
+            }
+
+            
+            if (brush.modMode == "time_animated") {
+                val ts = activeTemporalStroke
+                if (ts != null) {
+                    val dx = mid2X - mid1X
+                    val dy = mid2Y - mid1Y
+                    val len = hypot(dx, dy).coerceAtLeast(0.001f)
+                    val nx = -dy / len
+                    val ny = dx / len
+                    if (ts.nodes.isEmpty() || hypot(x - ts.nodes.last().x, y - ts.nodes.last().y) >= max(2.5f, rad * 0.45f)) {
+                        ts.nodes.add(
+                            TemporalDabNode(
+                                x = x,
+                                y = y,
+                                nx = nx,
+                                ny = ny,
+                                radius = rad,
+                                alpha = dabAlpha,
+                                phase = ts.nodes.size * 0.35f
+                            )
+                        )
+                    }
+                }
+                continue
+            }
+
+            if (brush.modMode == "procedural_web") {
+                val reach = (brush.modParams["reach"]?.toFloatOrNull() ?: 135f) * (brush.size / 38f).coerceIn(0.4f, 3f)
+                val branches = (brush.modParams["branches"]?.toIntOrNull() ?: 3).coerceIn(1, 8)
+                if (procHistoryPts.isEmpty() || hypot(x - procHistoryPts.last().x, y - procHistoryPts.last().y) >= 5f) {
+                    procHistoryPts.add(PointF(x, y))
+                    if (procHistoryPts.size > 160) procHistoryPts.removeAt(0)
+                }
+                strokePaint.xfermode = null
+                strokePaint.shader = null
+                strokePaint.style = Paint.Style.STROKE
+                strokePaint.strokeWidth = (rad * 0.14f).coerceAtLeast(1.4f)
+                // Connect gossamer web filaments to nearby historical vertices
+                for (hIdx in max(0, procHistoryPts.size - 45) until procHistoryPts.size - 1) {
+                    val hp = procHistoryPts[hIdx]
+                    val d = hypot(x - hp.x, y - hp.y)
+                    if (d in 8f..reach) {
+                        val falloff = (1f - d / reach)
+                        val webAlpha = (dabAlpha * falloff * falloff * 0.48f).toInt().coerceIn(4, 180)
+                        strokePaint.color = Color.argb(webAlpha, cr, cg, cb)
+                        c.drawLine(x, y, hp.x, hp.y, strokePaint)
+                    }
+                }
+                // Procedural fractal lightning tendrils
+                if (i % 2 == 0) {
+                    for (b in 0 until branches) {
+                        val ang = Random.nextFloat() * (Math.PI.toFloat() * 2f)
+                        val bLen = rad * (0.8f + Random.nextFloat() * 1.4f)
+                        val mx = x + cos(ang) * bLen * 0.5f + (Random.nextFloat() - 0.5f) * rad * 0.5f
+                        val my = y + sin(ang) * bLen * 0.5f + (Random.nextFloat() - 0.5f) * rad * 0.5f
+                        val ex = x + cos(ang) * bLen
+                        val ey = y + sin(ang) * bLen
+                        strokePaint.color = Color.argb((dabAlpha * 0.55f).toInt().coerceIn(8, 200), cr, cg, cb)
+                        c.drawLine(x, y, mx, my, strokePaint)
+                        c.drawLine(mx, my, ex, ey, strokePaint)
+                    }
+                }
+                strokePaint.style = Paint.Style.FILL
+                strokePaint.color = Color.argb(dabAlpha, cr, cg, cb)
+                c.drawCircle(x, y, (rad * 0.24f).coerceAtLeast(1.5f), strokePaint)
+                continue
+            }
+
+            if (brush.modMode == "custom_harmonic_nib") {
+                val lobes = (brush.modParams["lobes"]?.toIntOrNull() ?: 5).coerceIn(3, 12)
+                val coreOpac = (brush.modParams["core_opac"]?.toFloatOrNull() ?: 96f) / 100f
+                val petalOpac = (brush.modParams["petal_opac"]?.toFloatOrNull() ?: 36f) / 100f
+                val featherSmooth = (brush.modParams["feather_smooth"]?.toFloatOrNull() ?: 88f) / 100f
+                val tangentDeg = Math.toDegrees(atan2((mid2Y - mid1Y).toDouble(), (mid2X - mid1X).toDouble())).toFloat()
+
+                strokePaint.xfermode = null
+                // Zone 3: Wide Gaussian-style smooth feathered outer aura
+                val outerR = rad * (1.25f + featherSmooth * 0.65f)
+                strokePaint.shader = RadialGradient(
+                    x, y, outerR.coerceAtLeast(2f),
+                    intArrayOf(
+                        Color.argb((dabAlpha * 0.18f).toInt().coerceIn(4, 70), cr, cg, cb),
+                        Color.argb((dabAlpha * 0.06f).toInt().coerceIn(2, 35), cr, cg, cb),
+                        Color.TRANSPARENT
+                    ),
+                    floatArrayOf(0f, 0.6f, 1f),
+                    Shader.TileMode.CLAMP
+                )
+                c.drawCircle(x, y, outerR, strokePaint)
+                strokePaint.shader = null
+
+                // Zone 2: Harmonic polar rosette petals (medium smoothness & translucent glaze)
+                c.save()
+                c.translate(x, y)
+                c.rotate(tangentDeg + brush.rotation)
+                val petalAlpha = (dabAlpha * petalOpac).toInt().coerceIn(6, 180)
+                strokePaint.color = Color.argb(petalAlpha, cr, cg, cb)
+                for (L in 0 until lobes) {
+                    val aRad = L * 2.0 * Math.PI / lobes
+                    val px = cos(aRad).toFloat() * rad * 0.68f
+                    val py = sin(aRad).toFloat() * rad * 0.68f
+                    c.save()
+                    c.translate(px, py)
+                    c.rotate(Math.toDegrees(aRad).toFloat())
+                    c.drawOval(RectF(-rad * 0.48f, -rad * 0.22f, rad * 0.48f, rad * 0.22f), strokePaint)
+                    c.restore()
+                }
+
+                // Zone 1: Crisp high-opacity inner crescent core
+                val coreAlpha = (dabAlpha * coreOpac).toInt().coerceIn(15, 255)
+                strokePaint.color = Color.argb(coreAlpha, cr, cg, cb)
+                c.drawOval(RectF(-rad * 0.42f, -rad * 0.18f, rad * 0.42f, rad * 0.18f), strokePaint)
+                c.restore()
                 continue
             }
 

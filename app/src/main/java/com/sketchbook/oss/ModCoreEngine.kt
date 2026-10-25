@@ -45,7 +45,7 @@ data class ModUiPalette(
 
 class ModCoreEngine(private val context: Context, private val onStateChanged: () -> Unit) {
 
-    private val prefs = context.getSharedPreferences("sketchbook_mod_core_v2", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("sketchbook_mod_core_v3", Context.MODE_PRIVATE)
     val bundles = mutableListOf<ModFeatureBundle>()
     var activeScriptSource: String = ""
         private set
@@ -234,6 +234,46 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
         return false
     }
 
+    /**
+     * Collects all custom Mod Brushes (`fn inject_brush`) from currently enabled Mod Bundles!
+     */
+    fun getInjectedModBrushes(): List<SketchBrushItem> {
+        val out = mutableListOf<SketchBrushItem>()
+        for ((idx, fn) in getActiveFunctions("inject_brush").withIndex()) {
+            val p = fn.params
+            val id = p["id"] ?: "mod_brush_$idx"
+            val name = p["name"] ?: "Mod Brush ${idx + 1}"
+            val mode = p["mode"] ?: "procedural_web"
+            val size = p["size"]?.toFloatOrNull() ?: 42f
+            val opac = p["opacity"]?.toFloatOrNull() ?: 92f
+            val spacing = p["spacing"]?.toFloatOrNull() ?: 10f
+            val hardness = p["hardness"]?.toFloatOrNull() ?: 50f
+
+            val iconStyle = when (mode) {
+                "time_animated" -> BrushIconStyle.TEXTURE_FRACTAL
+                "custom_harmonic_nib" -> BrushIconStyle.DIAMOND_SHADER
+                else -> BrushIconStyle.TEXTURE_FROST
+            }
+            val bType = if (mode == "time_animated") SketchBrushType.GLOW else SketchBrushType.STANDARD
+
+            out.add(
+                SketchBrushItem(
+                    id = id,
+                    name = name,
+                    iconStyle = iconStyle,
+                    brushType = bType,
+                    size = size,
+                    opacity = opac,
+                    spacing = spacing,
+                    hardness = hardness,
+                    modMode = mode,
+                    modParams = p
+                )
+            )
+        }
+        return out
+    }
+
     private fun parseHexOrDefault(hex: String?, defaultColor: Int): Int {
         if (hex.isNullOrBlank()) return defaultColor
         return try { Color.parseColor(hex) } catch (_: Exception) { defaultColor }
@@ -275,12 +315,8 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
         return out
     }
 
-    // --------------------------------------------------------------------------
-    // PREMIUM 60FPS ANIMATED UI EFFECTS
-    // --------------------------------------------------------------------------
     fun renderTopBarAnimatedEffects(canvas: Canvas, left: Float, top: Float, right: Float, bottom: Float, timeSec: Float) {
         val w = right - left
-        // 1. Flowing Aurora Topbar Shimmer
         for (fn in getActiveFunctions("ui_anim_aurora")) {
             val c1 = parseHexOrDefault(fn.params["c1"], Color.argb(110, 0, 229, 255))
             val c2 = parseHexOrDefault(fn.params["c2"], Color.argb(110, 124, 77, 255))
@@ -298,7 +334,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             animPaint.shader = null
         }
 
-        // 2. Traveling Specular Laser Line along Bottom of Top Bar
         for (fn in getActiveFunctions("ui_anim_laser_border")) {
             val beamColor = parseHexOrDefault(fn.params["color"], Color.rgb(0, 229, 255))
             val beamW = w * 0.32f
@@ -317,7 +352,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
     }
 
     fun renderWorkspaceAnimatedEffects(canvas: Canvas, w: Float, h: Float, topBarH: Float, dotCx: Float, dotCy: Float, dotR: Float, timeSec: Float) {
-        // 1. Floating Ambient Bokeh / Cyber Particles in Workspace
         for (fn in getActiveFunctions("ui_anim_particles")) {
             val baseColor = parseHexOrDefault(fn.params["color"], Color.rgb(0, 229, 255))
             val count = (fn.params["count"]?.toIntOrNull() ?: 18).coerceIn(4, 40)
@@ -337,7 +371,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             }
         }
 
-        // 2. Orbiting Energy Rings around Bottom Lagoon Dot
         for (fn in getActiveFunctions("ui_anim_dot_orbit")) {
             val ringColor = parseHexOrDefault(fn.params["color"], Color.rgb(0, 229, 255))
             animPaint.style = Paint.Style.STROKE
@@ -441,6 +474,10 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
     companion object {
         val DEFAULT_MULTI_BUNDLE_SCRIPT =
             "# SketchBook OSS - Unified Multi-Bundle Core Mod Script\n" +
+            "@bundle id=\"mod_brushes_pack\" title=\"SOTA Mod Brushes (Procedural, Animated & Lotus Nib)\" default=true desc=\"Injects Procedural Synapse Web, Time-Animated Chrono Plasma & Lotus Feather Nib\"\n" +
+            "fn inject_brush id=\"mb_synapse\" name=\"Synapse Web (Procedural)\" mode=\"procedural_web\" size=38 opacity=92 spacing=10 reach=135 branches=3\n" +
+            "fn inject_brush id=\"mb_chrono\" name=\"Chrono Plasma (Time-Animated)\" mode=\"time_animated\" size=46 opacity=95 spacing=14 speed=3.8 wave=14 sparks=3 hue_shift=45\n" +
+            "fn inject_brush id=\"mb_lotus\" name=\"Lotus Crescent Nib (Var. Opacity/Smooth)\" mode=\"custom_harmonic_nib\" size=64 opacity=95 spacing=12 lobes=5 core_opac=96 petal_opac=36 feather_smooth=88\n\n" +
             "@bundle id=\"obsidian_dark_ui\" title=\"Obsidian Dark Pro UI\" default=false desc=\"Transforms top bar, popups, icons & backdrop into carbon dark mode\"\n" +
             "fn ui_theme topbar=\"#1B1E26\" topbar_active=\"#2B303C\" popup_bg=\"#232731\" popup_header=\"#171A21\" card_bg=\"#2C313E\" input_bg=\"#14171D\" text_primary=\"#ECEFF4\" text_secondary=\"#9AA5B8\" icon_tint=\"#D8DEE9\" accent=\"#00B8D4\" border=\"#383F4E\" backdrop=\"#0F1116\"\n\n" +
             "@bundle id=\"rosegold_velvet_ui\" title=\"Rose-Gold & Espresso UI\" default=false desc=\"Warm luxury rose-gold menus, copper accents & espresso backdrop\"\n" +
@@ -455,15 +492,9 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             "fn canvas_grid divisions=3 color=\"#662B6CB0\" stroke=2.5\n" +
             "fn canvas_grid divisions=12 color=\"#282B6CB0\" stroke=1.0\n" +
             "fn safe_frame margin=0.06\n\n" +
-            "@bundle id=\"perspective_symmetry\" title=\"Symmetry & Vanishing Rays\" default=false desc=\"Center X/Y symmetry axes + diagonal vanishing rays\"\n" +
-            "fn perspective_crosshair color=\"#77D84315\"\n\n" +
             "@bundle id=\"cinema_presets\" title=\"Cinema & Social Presets Pack\" default=true desc=\"Injects 4K UHD, Cinema 21:9, and Square 2K presets\"\n" +
             "fn inject_preset name=\"4K UHD\" w=3840 h=2160\n" +
             "fn inject_preset name=\"Cinema 21:9\" w=2560 h=1080\n" +
-            "fn inject_preset name=\"Square 2K\" w=2048 h=2048\n\n" +
-            "@bundle id=\"warm_sketchpad\" title=\"Warm Cream Sketchpad Paper\" default=false desc=\"Tints canvas paper to archival cream\"\n" +
-            "fn paper_tint color=\"#FDFBF2\"\n\n" +
-            "@bundle id=\"telemetry_hud\" title=\"Live Canvas Telemetry HUD\" default=false desc=\"Displays project name, dimensions, Mpx & layer limit\"\n" +
-            "fn canvas_hud mode=\"compact\""
+            "fn inject_preset name=\"Square 2K\" w=2048 h=2048"
     }
 }

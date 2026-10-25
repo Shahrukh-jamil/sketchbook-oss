@@ -67,6 +67,30 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
     private var wheelInnerR = 220f
     private var diamondHalfDiag = 192f
 
+    
+    fun syncModInjectedBrushes(modBrushes: List<SketchBrushItem>) {
+        val existingIdx = brushSets.indexOfFirst { it.id == "set_modded" }
+        if (modBrushes.isEmpty()) {
+            if (existingIdx >= 0) {
+                brushSets.removeAt(existingIdx)
+                selectedSetIndex = selectedSetIndex.coerceIn(0, max(0, brushSets.lastIndex))
+            }
+            return
+        }
+        if (existingIdx >= 0) {
+            val existingSet = brushSets[existingIdx]
+            for (mb in modBrushes) {
+                if (existingSet.brushes.none { it.id == mb.id }) {
+                    existingSet.brushes.add(mb)
+                }
+            }
+        } else {
+            brushSets.add(0, SketchBrushSet("set_modded", "Modded Brushes (Live)", isPinned = true, brushes = modBrushes.toMutableList()))
+            selectedSetIndex = 0
+            selectedBrushIndex = 0
+        }
+    }
+
     fun selectedSet(): SketchBrushSet {
         if (brushSets.isEmpty()) brushSets.addAll(DefaultBrushCatalog.createDefaultSets())
         selectedSetIndex = selectedSetIndex.coerceIn(0, brushSets.lastIndex)
@@ -94,6 +118,7 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
     // MAIN MODAL RENDER DISPATCHER
     // ==========================================================================
     fun draw(canvas: Canvas, viewW: Float, viewH: Float, isColorMode: Boolean) {
+        syncModInjectedBrushes(hostView.modEngine.getInjectedModBrushes())
         hits.clear()
         sliderRects.clear()
 
@@ -249,7 +274,45 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
             val envelope = (0.38f + 0.62f * sin(t * Math.PI).toFloat()).coerceIn(0.2f, 1f)
             val rad = (maxRad * envelope).coerceAtLeast(2f)
 
-            if (brush.brushType == SketchBrushType.GLOW) {
+            
+            if (brush.modMode == "procedural_web") {
+                strokePaint.color = Color.argb((baseAlpha * 0.65f).toInt().coerceAtLeast(20), r, g, b)
+                strokePaint.strokeWidth = 2.2f * sx
+                val wx = x + sin(i * 1.7f) * rad * 0.9f
+                val wy = y + cos(i * 1.3f) * rad * 0.9f
+                canvas.drawLine(x, y, wx, wy, strokePaint)
+                if (i % 3 == 0) {
+                    canvas.drawLine(x, y, x - rad * 1.4f, y + sin(i * 0.8f) * rad, strokePaint)
+                }
+                previewPaint.color = Color.argb(baseAlpha, r, g, b)
+                canvas.drawCircle(x, y, rad * 0.28f, previewPaint)
+            } else if (brush.modMode == "time_animated") {
+                val timeNow = (System.nanoTime() / 1_000_000_000.0).toFloat()
+                val animY = y + sin(timeNow * 5f + i * 0.25f) * (rad * 0.55f)
+                val hueShift = ((ColorStudioState.colorToHsl(drawColor)[0] + i * 2f + timeNow * 60f) % 360f)
+                val dynCol = ColorStudioState.hslToColor(hueShift, 0.85f, 0.55f)
+                previewPaint.color = Color.argb((baseAlpha * 0.22f).toInt().coerceAtLeast(8), Color.red(dynCol), Color.green(dynCol), Color.blue(dynCol))
+                canvas.drawCircle(x, animY, rad * 1.8f, previewPaint)
+                previewPaint.color = Color.argb(baseAlpha, 255, 255, 255)
+                canvas.drawCircle(x, animY, rad * 0.42f, previewPaint)
+                hostView.postInvalidateOnAnimation()
+            } else if (brush.modMode == "custom_harmonic_nib") {
+                val lobes = (brush.modParams["lobes"]?.toIntOrNull() ?: 5).coerceIn(3, 12)
+                // Zone 3: Ultra-smooth feathered outer aura
+                previewPaint.color = Color.argb((baseAlpha * 0.10f).toInt().coerceAtLeast(4), r, g, b)
+                canvas.drawCircle(x, y, rad * 1.45f, previewPaint)
+                // Zone 2: Translucent harmonic petals
+                previewPaint.color = Color.argb((baseAlpha * 0.34f).toInt().coerceAtLeast(10), r, g, b)
+                for (L in 0 until lobes) {
+                    val ang = (L * 2.0 * Math.PI / lobes) + t * 2.5
+                    val px = x + cos(ang).toFloat() * rad * 0.72f
+                    val py = y + sin(ang).toFloat() * rad * 0.72f
+                    canvas.drawCircle(px, py, rad * 0.42f, previewPaint)
+                }
+                // Zone 1: Crisp high-opacity inner crescent core
+                previewPaint.color = Color.argb(baseAlpha, r, g, b)
+                canvas.drawCircle(x, y, rad * 0.36f, previewPaint)
+            } else if (brush.brushType == SketchBrushType.GLOW) {
                 previewPaint.color = Color.argb((baseAlpha * 0.12f).toInt().coerceAtLeast(4), r, g, b)
                 canvas.drawCircle(x, y, rad * 1.9f, previewPaint)
                 previewPaint.color = Color.argb((baseAlpha * 0.45f).toInt().coerceAtLeast(10), 255, 255, 255)
