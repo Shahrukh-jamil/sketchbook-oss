@@ -48,7 +48,6 @@ class SketchProjectState(
             if (w <= 0 || h <= 0) return 0
             val mpx = (w.toLong() * h.toLong()) / 1_000_000f
             if (mpx <= 0.01f) return 250
-            // Realistic layer capacity formula matching SketchBook memory budget
             val raw = (390f / mpx).roundToInt()
             return min(250, max(4, raw))
         }

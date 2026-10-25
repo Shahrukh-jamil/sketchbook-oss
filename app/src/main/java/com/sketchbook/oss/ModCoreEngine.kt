@@ -10,11 +10,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.min
 
-/**
- * Core Mod Engine where a SINGLE Mod Script bundles multiple independent Feature Toggles.
- * Each Feature Bundle groups multiple core functions (canvas hooks, preset injectors,
- * workspace theme overrides, HUD overlays, and procedural actions) under ONE toggle in Core.
- */
 data class ModFunctionSpec(
     val type: String,
     val params: Map<String, String>
@@ -52,10 +47,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
         }
     }
 
-    /**
-     * Parses a single unified Mod Script (supports both declarative SketchMod DSL and JSON format)
-     * into multiple independent Feature Bundles, each with its own Core ON/OFF toggle.
-     */
     fun loadScript(scriptText: String, saveToPrefs: Boolean = true): Boolean {
         val trimmed = scriptText.trim()
         if (trimmed.isEmpty()) {
@@ -76,7 +67,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
                 return false
             }
 
-            // Restore saved toggle states per bundle ID
             for (b in parsedBundles) {
                 if (prefs.contains("bundle_toggle_${b.id}")) {
                     b.enabled = prefs.getBoolean("bundle_toggle_${b.id}", b.enabled)
@@ -90,7 +80,8 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             if (saveToPrefs) {
                 prefs.edit().putString("active_mod_script", trimmed).apply()
             }
-            lastStatusMessage = "Loaded ${bundles.size} feature bundles (${bundles.sumOf { it.functions.size }} functions)"
+            val totalFns = bundles.fold(0) { acc, item -> acc + item.functions.size }
+            lastStatusMessage = "Loaded ${bundles.size} feature bundles ($totalFns functions)"
             onStateChanged()
             return true
         } catch (e: Exception) {
@@ -120,15 +111,13 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             }
         }
 
-        val lines = dsl.lines()
-        for (rawLine in lines) {
+        for (rawLine in dsl.lines()) {
             val line = rawLine.trim()
             if (line.isEmpty() || line.startsWith("#") || line.startsWith("//")) continue
 
             if (line.startsWith("@bundle")) {
                 flushCurrent()
                 currentFuncs = mutableListOf()
-                // Format: @bundle id="grid_pack" title="Pro Grid & Guides" default=false desc="..."
                 val attrs = parseKeyValues(line.removePrefix("@bundle").trim())
                 currentId = attrs["id"] ?: "bundle_${out.size + 1}"
                 currentTitle = attrs["title"] ?: currentId
@@ -176,12 +165,12 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
 
     private fun parseKeyValues(input: String): Map<String, String> {
         val result = mutableMapOf<String, String>()
-        val regex = Regex("""(\w+)\s*=\s*("([^"]*)"|(\S+))""")
+        val regex = Regex("(\\w+)\\s*=\\s*(\"([^\"]*)\"|(\\S+))")
         for (match in regex.findAll(input)) {
             val key = match.groupValues[1]
             val quoted = match.groupValues[3]
             val unquoted = match.groupValues[4]
-            result[key] = if (match.groupValues[2].startsWith(""")) quoted else unquoted
+            result[key] = if (match.groupValues[2].startsWith("\"")) quoted else unquoted
         }
         return result
     }
@@ -203,10 +192,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
         prefs.edit().clear().apply()
         loadScript(DEFAULT_MULTI_BUNDLE_SCRIPT, saveToPrefs = true)
     }
-
-    // --------------------------------------------------------------------------
-    // CORE EXECUTION HOOKS (Automatically gated by each Bundle's toggle state)
-    // --------------------------------------------------------------------------
 
     fun getActiveFunctions(type: String): List<ModFunctionSpec> {
         val list = mutableListOf<ModFunctionSpec>()
@@ -267,7 +252,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
     }
 
     fun renderCanvasOverlays(canvas: Canvas, rect: RectF, project: SketchProjectState) {
-        // 1. Grid Overlay function
         for (fn in getActiveFunctions("canvas_grid")) {
             val divs = (fn.params["divisions"]?.toIntOrNull() ?: 3).coerceIn(2, 64)
             val colorStr = fn.params["color"] ?: "#550077CC"
@@ -286,7 +270,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             }
         }
 
-        // 2. Perspective / Crosshair Axis Guide function
         for (fn in getActiveFunctions("perspective_crosshair")) {
             val colorStr = fn.params["color"] ?: "#66E65100"
             overlayPaint.style = Paint.Style.STROKE
@@ -305,7 +288,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             overlayPaint.pathEffect = null
         }
 
-        // 3. Golden Ratio / Safe Frame function
         for (fn in getActiveFunctions("safe_frame")) {
             val marginPct = (fn.params["margin"]?.toFloatOrNull() ?: 0.08f).coerceIn(0.02f, 0.4f)
             overlayPaint.style = Paint.Style.STROKE
@@ -316,7 +298,6 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
             canvas.drawRect(rect.left + dx, rect.top + dy, rect.right - dx, rect.bottom - dy, overlayPaint)
         }
 
-        // 4. Live Canvas Specs HUD
         for (fn in getActiveFunctions("canvas_hud")) {
             val mpx = String.format("%.2fMpx", project.calcMegapixels())
             val maxL = SketchProjectState.calculateMaxLayers(project.width, project.height)
@@ -337,30 +318,22 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
     }
 
     companion object {
-        val DEFAULT_MULTI_BUNDLE_SCRIPT = """
-# SketchBook OSS - Unified Multi-Bundle Core Mod Script
-# One script defines multiple independent feature bundles.
-# Each @bundle creates a Core-level toggle grouping multiple functions together.
-
-@bundle id="composition_guides" title="Composition & Grid Guides" default=false desc="Rule-of-thirds grid + 12-div subgrid + action safe frame"
-fn canvas_grid divisions=3 color="#662B6CB0" stroke=2.5
-fn canvas_grid divisions=12 color="#282B6CB0" stroke=1.0
-fn safe_frame margin=0.06
-
-@bundle id="perspective_symmetry" title="Symmetry & Vanishing Rays" default=false desc="Center X/Y symmetry axes + diagonal vanishing rays + compass ring"
-fn perspective_crosshair color="#77D84315"
-
-@bundle id="cinema_presets" title="Cinema & Social Presets Pack" default=true desc="Injects 4K UHD, CinemaScope 21:9, and Square 2K into New Sketch presets"
-fn inject_preset name="4K UHD" w=3840 h=2160
-fn inject_preset name="Cinema 21:9" w=2560 h=1080
-fn inject_preset name="Square 2K" w=2048 h=2048
-
-@bundle id="warm_sketchpad" title="Warm Cream Sketchpad Paper" default=false desc="Tints canvas paper to eye-care warm archival cream & darkens backdrop"
-fn paper_tint color="#FDFBF2"
-fn workspace_theme backdrop="#585858" topbar="#E6E6E6"
-
-@bundle id="telemetry_hud" title="Live Canvas Telemetry HUD" default=false desc="Displays project name, pixel dimensions, Mpx & max layer count on canvas"
-fn canvas_hud mode="compact"
-""".trimIndent()
+        val DEFAULT_MULTI_BUNDLE_SCRIPT =
+            "# SketchBook OSS - Unified Multi-Bundle Core Mod Script\n" +
+            "@bundle id=\"composition_guides\" title=\"Composition & Grid Guides\" default=false desc=\"Rule-of-thirds + 12-div subgrid + safe frame\"\n" +
+            "fn canvas_grid divisions=3 color=\"#662B6CB0\" stroke=2.5\n" +
+            "fn canvas_grid divisions=12 color=\"#282B6CB0\" stroke=1.0\n" +
+            "fn safe_frame margin=0.06\n\n" +
+            "@bundle id=\"perspective_symmetry\" title=\"Symmetry & Vanishing Rays\" default=false desc=\"Center X/Y symmetry axes + diagonal vanishing rays\"\n" +
+            "fn perspective_crosshair color=\"#77D84315\"\n\n" +
+            "@bundle id=\"cinema_presets\" title=\"Cinema & Social Presets Pack\" default=true desc=\"Injects 4K UHD, Cinema 21:9, and Square 2K presets\"\n" +
+            "fn inject_preset name=\"4K UHD\" w=3840 h=2160\n" +
+            "fn inject_preset name=\"Cinema 21:9\" w=2560 h=1080\n" +
+            "fn inject_preset name=\"Square 2K\" w=2048 h=2048\n\n" +
+            "@bundle id=\"warm_sketchpad\" title=\"Warm Cream Sketchpad Paper\" default=false desc=\"Tints canvas paper to archival cream & darkens backdrop\"\n" +
+            "fn paper_tint color=\"#FDFBF2\"\n" +
+            "fn workspace_theme backdrop=\"#585858\" topbar=\"#E6E6E6\"\n\n" +
+            "@bundle id=\"telemetry_hud\" title=\"Live Canvas Telemetry HUD\" default=false desc=\"Displays project name, dimensions, Mpx & layer limit\"\n" +
+            "fn canvas_hud mode=\"compact\""
     }
 }

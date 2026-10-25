@@ -10,7 +10,6 @@ import android.os.Environment
 import android.provider.MediaStore
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
@@ -86,10 +85,6 @@ object ProjectStorageManager {
             .apply()
     }
 
-    /**
-     * Renders the project's full resolution bitmap (either blank white canvas or imported image)
-     * and writes BOTH a PNG and a valid SketchBook uncompressed RGBA TIFF to device storage.
-     */
     fun saveProjectToDevice(
         context: Context,
         project: SketchProjectState,
@@ -104,7 +99,6 @@ object ProjectStorageManager {
                 safeBase
             }
 
-            // Build bitmap at project dimensions (clamped safely to avoid OOM on extreme test dimensions)
             val maxDim = 4096
             val scale = if (project.width > maxDim || project.height > maxDim) {
                 maxDim.toFloat() / maxOf(project.width, project.height).toFloat()
@@ -120,26 +114,14 @@ object ProjectStorageManager {
                 c.drawBitmap(src, null, dstRect, null)
             }
 
-            // 1. Save PNG to MediaStore Pictures/SketchBookOSS (visible immediately in Gallery & Files)
             val savedLocation = savePngToMediaStoreOrDisk(context, bmp, finalName)
 
-            // 2. Also write native SketchBook TIFF (.tif) project file into app project directory
             val tiffDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "Projects")
             if (!tiffDir.exists()) tiffDir.mkdirs()
             val tiffFile = File(tiffDir, "$finalName.tif")
             FileOutputStream(tiffFile).use { fos ->
                 writeSketchbookTiff(bmp, fos, project.width, project.height)
             }
-
-            // If full external storage access is available, also mirror .tif into Documents/SketchBookOSS
-            try {
-                val pubDocs = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "SketchBookOSS")
-                if (!pubDocs.exists()) pubDocs.mkdirs()
-                val pubTiff = File(pubDocs, "$finalName.tif")
-                FileOutputStream(pubTiff).use { fos ->
-                    writeSketchbookTiff(bmp, fos, project.width, project.height)
-                }
-            } catch (_: Exception) {}
 
             bmp.recycle()
             Result.success(savedLocation)
@@ -166,11 +148,10 @@ object ProjectStorageManager {
                 values.clear()
                 values.put(MediaStore.Images.Media.IS_PENDING, 0)
                 resolver.update(uri, values, null, null)
-                return "Pictures/SketchBookOSS/$fileName (+ .tif)"
+                return "Pictures/SketchBookOSS/$fileName"
             }
         }
 
-        // Fallback / API <= 28 direct external storage write
         val pubPic = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "SketchBookOSS")
         if (!pubPic.exists()) pubPic.mkdirs()
         val outFile = File(pubPic, fileName)
@@ -190,9 +171,6 @@ object ProjectStorageManager {
         }
     }
 
-    /**
-     * Writes a baseline RGBA 8-bit Little-Endian TIFF with Autodesk SketchBook metadata tag.
-     */
     fun writeSketchbookTiff(bmp: Bitmap, out: OutputStream, logicalW: Int, logicalH: Int) {
         val w = bmp.width
         val h = bmp.height
@@ -203,7 +181,6 @@ object ProjectStorageManager {
         val softwareStr = "Autodesk SketchBook OSS ($logicalW x $logicalH)\u0000"
         val softwareBytes = softwareStr.toByteArray(Charsets.US_ASCII)
 
-        // Header (8 bytes) + IFD (2 + 12*12 + 4 = 150 bytes) + BitsPerSample(8 bytes) + XRes(8) + YRes(8) + Software
         val ifdOffset = 8
         val numEntries = 12
         val afterIfdOffset = ifdOffset + 2 + (numEntries * 12) + 4
@@ -214,7 +191,6 @@ object ProjectStorageManager {
         val pixelDataOffset = softOffset + softwareBytes.size + (softwareBytes.size % 2)
 
         val headerBuf = ByteBuffer.allocate(pixelDataOffset).order(ByteOrder.LITTLE_ENDIAN)
-        // Little-endian 'II', version 42, first IFD offset
         headerBuf.put('I'.code.toByte())
         headerBuf.put('I'.code.toByte())
         headerBuf.putShort(42)
@@ -230,49 +206,44 @@ object ProjectStorageManager {
             headerBuf.putInt(valueOrOffset)
         }
 
-        // Standard TIFF 6.0 Baseline RGBA Tags (sorted ascending by tag ID)
-        putIfdEntry(256, 4, 1, w)                        // ImageWidth (LONG)
-        putIfdEntry(257, 4, 1, h)                        // ImageLength (LONG)
-        putIfdEntry(258, 3, 4, bpsOffset)                // BitsPerSample (4x SHORT = 8,8,8,8)
-        putIfdEntry(259, 3, 1, 1)                        // Compression = 1 (Uncompressed)
-        putIfdEntry(262, 3, 1, 2)                        // PhotometricInterpretation = 2 (RGB)
-        putIfdEntry(273, 4, 1, pixelDataOffset)          // StripOffsets
-        putIfdEntry(277, 3, 1, 4)                        // SamplesPerPixel = 4 (RGBA)
-        putIfdEntry(278, 4, 1, h)                        // RowsPerStrip = h
-        putIfdEntry(279, 4, 1, imageByteCount)           // StripByteCounts
-        putIfdEntry(282, 5, 1, xResOffset)               // XResolution (RATIONAL)
-        putIfdEntry(283, 5, 1, yResOffset)               // YResolution (RATIONAL)
-        putIfdEntry(305, 2, softwareBytes.size, softOffset) // Software tag (SketchBook metadata)
+        putIfdEntry(256, 4, 1, w)
+        putIfdEntry(257, 4, 1, h)
+        putIfdEntry(258, 3, 4, bpsOffset)
+        putIfdEntry(259, 3, 1, 1)
+        putIfdEntry(262, 3, 1, 2)
+        putIfdEntry(273, 4, 1, pixelDataOffset)
+        putIfdEntry(277, 3, 1, 4)
+        putIfdEntry(278, 4, 1, h)
+        putIfdEntry(279, 4, 1, imageByteCount)
+        putIfdEntry(282, 5, 1, xResOffset)
+        putIfdEntry(283, 5, 1, yResOffset)
+        putIfdEntry(305, 2, softwareBytes.size, softOffset)
 
-        headerBuf.putInt(0) // Next IFD offset = 0
+        headerBuf.putInt(0)
 
-        // Write BitsPerSample (8, 8, 8, 8)
         headerBuf.position(bpsOffset)
         headerBuf.putShort(8); headerBuf.putShort(8); headerBuf.putShort(8); headerBuf.putShort(8)
 
-        // Write XResolution & YResolution (300 / 1 DPI)
         headerBuf.position(xResOffset)
         headerBuf.putInt(300); headerBuf.putInt(1)
         headerBuf.position(yResOffset)
         headerBuf.putInt(300); headerBuf.putInt(1)
 
-        // Write Software string
         headerBuf.position(softOffset)
         headerBuf.put(softwareBytes)
 
         out.write(headerBuf.array())
 
-        // Stream RGBA rows in chunks
         val rowBytes = ByteArray(w * 4)
         var idx = 0
         for (y in 0 until h) {
             var bPos = 0
             for (x in 0 until w) {
                 val c = pixels[idx++]
-                rowBytes[bPos++] = ((c shr 16) and 0xFF).toByte() // R
-                rowBytes[bPos++] = ((c shr 8) and 0xFF).toByte()  // G
-                rowBytes[bPos++] = (c and 0xFF).toByte()          // B
-                rowBytes[bPos++] = ((c shr 24) and 0xFF).toByte() // A
+                rowBytes[bPos++] = ((c shr 16) and 0xFF).toByte()
+                rowBytes[bPos++] = ((c shr 8) and 0xFF).toByte()
+                rowBytes[bPos++] = (c and 0xFF).toByte()
+                rowBytes[bPos++] = ((c shr 24) and 0xFF).toByte()
             }
             out.write(rowBytes)
         }

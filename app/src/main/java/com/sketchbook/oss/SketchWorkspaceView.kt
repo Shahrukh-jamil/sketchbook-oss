@@ -31,26 +31,21 @@ class SketchWorkspaceView(
         fun onRequestImportImage()
     }
 
-    // Core State & Mod Engine
     val modEngine = ModCoreEngine(context) { invalidate() }
     var project = SketchProjectState()
     val customPresets = ProjectStorageManager.loadCustomPresets(context)
 
-    // Popup & Navigation State
     var popupState: TopPopupState = TopPopupState.NONE
     var newSketchTab: NewSketchTab = NewSketchTab.PLUS_CUSTOM
 
-    // Custom '+' & Edit Preset Working Fields
     var customWidthInput: Int = 1080
     var customHeightInput: Int = 2408
     var isRatioLocked: Boolean = false
     var lockedAspectRatio: Double = 1080.0 / 2408.0
 
-    // Preset Editor State
-    var editingPresetIndex: Int = -1 // -1 means Adding a new preset
+    var editingPresetIndex: Int = -1
     var editingPresetName: String = "Letter"
 
-    // Custom Presets List Scroll & Hold-to-Reorder State
     private var presetListScrollY: Float = 0f
     private var touchDownX: Float = 0f
     private var touchDownY: Float = 0f
@@ -61,18 +56,15 @@ class SketchWorkspaceView(
     private var isScrollingPresets: Boolean = false
     private var longPressRunnable: Runnable? = null
 
-    // Temporary Banner Notification
     private var statusBannerText: String? = null
     private var statusBannerExpiry: Long = 0L
 
-    // Paints
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val subTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-    // Hit-test Registry (rebuilt cleanly each frame for zero overlap)
     private data class HitZone(val id: String, val rect: RectF, val payload: Int = -1)
     private val hitZones = mutableListOf<HitZone>()
     private var currentPopupBounds = RectF()
@@ -99,7 +91,7 @@ class SketchWorkspaceView(
         statusBannerText = msg
         statusBannerExpiry = System.currentTimeMillis() + 3000L
         invalidate()
-        postDelayed({ invalidate() }, 3100L)
+        postDelayed(Runnable { invalidate() }, 3100L)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -110,16 +102,13 @@ class SketchWorkspaceView(
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
 
-        // Reference unit: 1080px screen width -> unit scale
         val sx = w / 1080f
         val topBarH = 131f * sx
         val sideFrame = 9f * sx
 
-        // 1. Draw Workspace Backdrop (#7F7F7F or Mod override)
         val workspaceColor = modEngine.getWorkspaceColorOverride(Color.rgb(127, 127, 127))
         canvas.drawColor(workspaceColor)
 
-        // 2. Draw Fitted Static Canvas inside Workspace (Not zoomable/rotatable)
         val availW = w - sideFrame * 2f
         val availH = h - topBarH
         val projW = max(1, project.width).toFloat()
@@ -135,25 +124,19 @@ class SketchWorkspaceView(
         bgPaint.color = modEngine.getCanvasPaperTintOverride(Color.WHITE)
         canvas.drawRect(canvasRect, bgPaint)
 
-        // If project was created via Import from Files, draw the imported image
         project.importedBitmap?.let { bmp ->
             if (!bmp.isRecycled) {
                 canvas.drawBitmap(bmp, null, canvasRect, null)
             }
         }
 
-        // Core Mod Engine Canvas Overlays (when corresponding bundles are toggled ON)
         modEngine.renderCanvasOverlays(canvas, canvasRect, project)
-
-        // 3. Draw Top Menu Bar (8 Exact Buttons, Zero Vertical Gap Below)
         drawTopMenuBar(canvas, w, topBarH, sideFrame)
 
-        // 4. Draw Bottom Centered Dot (Unclickable surface element as requested)
         val dotY = h - 136f * sx
         val dotRadius = 15.5f * sx
         SketchIcons.drawBottomCenterDot(canvas, w / 2f, dotY, dotRadius)
 
-        // 5. Draw Active Popup Menu Directly Below Top Bar (0px Vertical Padding!)
         currentPopupBounds.setEmpty()
         when (popupState) {
             TopPopupState.NONE -> {}
@@ -167,26 +150,22 @@ class SketchWorkspaceView(
             TopPopupState.MOD_MENU -> drawModMenu(canvas, sideFrame, topBarH, sx)
         }
 
-        // 6. Status Banner if active
         val now = System.currentTimeMillis()
-        if (statusBannerText != null && now < statusBannerExpiry) {
-            val msg = statusBannerText!!
+        val bannerMsg = statusBannerText
+        if (bannerMsg != null && now < statusBannerExpiry) {
             textPaint.textSize = 30f * sx
             textPaint.color = Color.WHITE
             textPaint.textAlign = Paint.Align.CENTER
-            val bw = min(w - 60f * sx, textPaint.measureText(msg) + 80f * sx)
+            val bw = min(w - 60f * sx, textPaint.measureText(bannerMsg) + 80f * sx)
             val bh = 78f * sx
             val bx = (w - bw) / 2f
             val by = h - 250f * sx
             bgPaint.color = Color.argb(230, 38, 38, 38)
             canvas.drawRect(bx, by, bx + bw, by + bh, bgPaint)
-            canvas.drawText(msg, w / 2f, by + bh * 0.64f, textPaint)
+            canvas.drawText(bannerMsg, w / 2f, by + bh * 0.64f, textPaint)
         }
     }
 
-    // ==========================================================================
-    // TOP BAR RENDERING (8 Exact Buttons)
-    // ==========================================================================
     private fun drawTopMenuBar(canvas: Canvas, w: Float, topBarH: Float, sideFrame: Float) {
         bgPaint.style = Paint.Style.FILL
         bgPaint.color = modEngine.getTopBarColorOverride(Color.rgb(239, 239, 239))
@@ -223,11 +202,6 @@ class SketchWorkspaceView(
         }
     }
 
-    // ==========================================================================
-    // 1. BUTTON 1 MAIN DROPDOWN MENU
-    // Project Name Box ABOVE "New Sketch", followed by:
-    // i. New Sketch | ii. Save | iii. Import | iv. Preferences | v. Share | vi. Mods
-    // ==========================================================================
     private fun drawButton1MainMenu(canvas: Canvas, left: Float, top: Float, sx: Float) {
         val panelW = 622f * sx
         val rowH = 132f * sx
@@ -243,7 +217,6 @@ class SketchWorkspaceView(
         borderPaint.strokeWidth = 2f * sx
         canvas.drawRect(currentPopupBounds, borderPaint)
 
-        // Row 0 (ABOVE New Sketch): Project Name Box (Sharp corners, SketchBook style)
         val r0Top = top
         val r0Bot = r0Top + rowH
         bgPaint.color = Color.rgb(236, 236, 236)
@@ -316,9 +289,6 @@ class SketchWorkspaceView(
         }
     }
 
-    // ==========================================================================
-    // 2. NEW SKETCH MENU ('+' Custom Size Tab & '≡' Presets List Tab)
-    // ==========================================================================
     private fun drawNewSketchMenu(canvas: Canvas, left: Float, top: Float, sx: Float) {
         val panelW = 622f * sx
         val headerH = 132f * sx
@@ -370,13 +340,6 @@ class SketchWorkspaceView(
         }
     }
 
-    /**
-     * Shared Precision Body for both New Sketch '+' Tab and 'Edit Preset' Menu:
-     * - Top-right Mpx + compact L<count> right below it (no info icon warning)
-     * - Interactive aspect-ratio Canvas Preview (rotates on click, elegant 0-value state)
-     * - Sharp-cornered Width & Height boxes with () / (-) ratio lock
-     * - Sharp-cornered blue Create / DONE button
-     */
     private fun drawCustomDimensionBody(
         canvas: Canvas,
         left: Float,
@@ -392,7 +355,6 @@ class SketchWorkspaceView(
         val right = left + panelW
         var cursorY = bodyTop + 28f * sx
 
-        // Optional Preset Name Box centered at top (for Edit Preset / Add Preset)
         if (showPresetNameBox) {
             val nameBoxW = 492f * sx
             val nameBoxH = 78f * sx
@@ -413,7 +375,6 @@ class SketchWorkspaceView(
             cursorY += nameBoxH + 24f * sx
         }
 
-        // Top-Right Mpx & Compact Layer Count ("L150")
         val isZeroDim = customWidthInput <= 0 || customHeightInput <= 0
         val mpxVal = if (isZeroDim) 0f else (customWidthInput.toLong() * customHeightInput.toLong()) / 1_000_000f
         val maxLayers = SketchProjectState.calculateMaxLayers(customWidthInput, customHeightInput)
@@ -430,14 +391,12 @@ class SketchWorkspaceView(
         canvas.drawText("L$maxLayers", right - 26f * sx, cursorY + 66f * sx, subTextPaint)
         subTextPaint.isFakeBoldText = false
 
-        // Interactive Canvas Dimension Preview Card (Centered)
         val previewAreaTop = cursorY + 36f * sx
         val previewMaxBox = 300f * sx
         val previewCx = left + panelW / 2f
         val previewCy = previewAreaTop + previewMaxBox / 2f
 
         if (isZeroDim) {
-            // Elegant visual feedback when Width or Height is set to 0
             val zeroW = if (customWidthInput <= 0) 90f * sx else 220f * sx
             val zeroH = if (customHeightInput <= 0) 90f * sx else 220f * sx
             val zRect = RectF(previewCx - zeroW / 2f, previewCy - zeroH / 2f, previewCx + zeroW / 2f, previewCy + zeroH / 2f)
@@ -470,7 +429,6 @@ class SketchWorkspaceView(
             }
             val cardRect = RectF(previewCx - cardW / 2f, previewCy - cardH / 2f, previewCx + cardW / 2f, previewCy + cardH / 2f)
 
-            // Subtle drop shadow matching Screenshot_20261025_091729.jpg
             shadowPaint.color = Color.argb(42, 0, 0, 0)
             canvas.drawRect(cardRect.left + 4f * sx, cardRect.top + 8f * sx, cardRect.right + 8f * sx, cardRect.bottom + 12f * sx, shadowPaint)
 
@@ -480,12 +438,10 @@ class SketchWorkspaceView(
             borderPaint.strokeWidth = 2f * sx
             canvas.drawRect(cardRect, borderPaint)
 
-            // Rotate icon inside canvas preview
             SketchIcons.drawCanvasRotateIcon(canvas, previewCx, previewCy, 56f * sx)
             hitZones.add(HitZone("ROTATE_CANVAS_PREVIEW", cardRect))
         }
 
-        // Width & Height Input Boxes + Ratio Lock Link Icon in between
         val boxesY = previewAreaTop + previewMaxBox + 84f * sx
         val boxW = 216f * sx
         val boxH = 82f * sx
@@ -496,7 +452,6 @@ class SketchWorkspaceView(
         val heightBoxRect = RectF(rightBoxX, boxesY, rightBoxX + boxW, boxesY + boxH)
         val linkIconRect = RectF(widthBoxRect.right, boxesY, heightBoxRect.left, boxesY + boxH)
 
-        // Draw Width Box (Sharp 0dp corners)
         bgPaint.color = Color.WHITE
         canvas.drawRect(widthBoxRect, bgPaint)
         borderPaint.color = if (customWidthInput <= 0) Color.rgb(195, 55, 55) else Color.rgb(117, 117, 117)
@@ -509,7 +464,6 @@ class SketchWorkspaceView(
         canvas.drawText(customWidthInput.toString(), widthBoxRect.centerX(), widthBoxRect.centerY() + 13f * sx, textPaint)
         hitZones.add(HitZone("INPUT_WIDTH_BOX", widthBoxRect))
 
-        // Draw Height Box (Sharp 0dp corners)
         bgPaint.color = Color.WHITE
         canvas.drawRect(heightBoxRect, bgPaint)
         borderPaint.color = if (customHeightInput <= 0) Color.rgb(195, 55, 55) else Color.rgb(117, 117, 117)
@@ -519,11 +473,9 @@ class SketchWorkspaceView(
         canvas.drawText(customHeightInput.toString(), heightBoxRect.centerX(), heightBoxRect.centerY() + 13f * sx, textPaint)
         hitZones.add(HitZone("INPUT_HEIGHT_BOX", heightBoxRect))
 
-        // Draw Link Icon: () when unlocked, (-) when locked
         SketchIcons.drawLinkRatioIcon(canvas, linkIconRect.centerX(), linkIconRect.centerY(), 50f * sx, isRatioLocked)
         hitZones.add(HitZone("TOGGLE_RATIO_LOCK", linkIconRect))
 
-        // Optional Delete Preset Button inside Edit Preset Settings Menu
         val createBtnW = 376f * sx
         val createBtnH = 88f * sx
         val createBtnX = left + (panelW - createBtnW) / 2f
@@ -550,7 +502,6 @@ class SketchWorkspaceView(
             hitZones.add(HitZone("BTN_DELETE_PRESET", delRect))
         }
 
-        // Sharp-cornered Blue Create / DONE Button (0dp corner radius)
         val createRect = RectF(createBtnX, createBtnY, createBtnX + createBtnW, createBtnY + createBtnH)
         bgPaint.color = if (isZeroDim) Color.rgb(165, 180, 205) else Color.rgb(55, 116, 205)
         canvas.drawRect(createRect, bgPaint)
@@ -564,15 +515,11 @@ class SketchWorkspaceView(
         }
     }
 
-    // ==========================================================================
-    // 2B. NEW SKETCH '≡' PRESETS LIST TAB (Pinned Screen & Last + Reorderable Custom Presets)
-    // ==========================================================================
     private fun drawPresetsListTab(canvas: Canvas, left: Float, bodyTop: Float, panelW: Float, bodyH: Float, sx: Float) {
         val right = left + panelW
         val pinnedRowH = 166f * sx
         val addBtnH = 112f * sx
 
-        // 1. Pinned Top Row: "Screen"
         val screenTop = bodyTop
         val screenBot = screenTop + pinnedRowH
         bgPaint.color = Color.rgb(250, 250, 250)
@@ -589,7 +536,6 @@ class SketchWorkspaceView(
         SketchIcons.drawPhoneScreenIcon(canvas, left + 530f * sx, screenTop + pinnedRowH / 2f, 84f * sx)
         hitZones.add(HitZone("PRESET_SCREEN", RectF(left, screenTop, right, screenBot)))
 
-        // 2. Pinned Second Row: "Last"
         val lastDims = ProjectStorageManager.loadLastDimensions(context, width, height)
         val lastTop = screenBot
         val lastBot = lastTop + pinnedRowH
@@ -608,7 +554,6 @@ class SketchWorkspaceView(
         borderPaint.strokeWidth = 2f * sx
         canvas.drawLine(left, lastBot, right, lastBot, borderPaint)
 
-        // 3. Scrollable & Hold-to-Reorder Custom Presets Area
         val listTop = lastBot
         val listBot = bodyTop + bodyH - addBtnH
         presetScrollAreaBounds.set(left, listTop, right, listBot)
@@ -633,7 +578,6 @@ class SketchWorkspaceView(
             }
         }
 
-        // Render Mod-Injected Presets (when Cinema & Social Presets Pack bundle is ON)
         for ((mIdx, mp) in injectedModPresets.withIndex()) {
             val visualIdx = customPresets.size + mIdx
             val itemTop = listTop + visualIdx * rowH - presetListScrollY
@@ -642,7 +586,6 @@ class SketchWorkspaceView(
             }
         }
 
-        // If user is actively holding & dragging a preset row to reorder, draw floating row under finger
         if (isDraggingPreset && draggedPresetIndex in customPresets.indices) {
             val floatTop = (dragCurrentY - rowH / 2f).coerceIn(listTop, listBot - rowH)
             drawSingleCustomPresetRow(
@@ -661,7 +604,6 @@ class SketchWorkspaceView(
 
         canvas.restore()
 
-        // 4. Bottom Fixed "Add Preset" Button (Sharp corners)
         val addTop = listBot
         val addBot = bodyTop + bodyH
         val addRect = RectF(left, addTop, right, addBot)
@@ -701,7 +643,6 @@ class SketchWorkspaceView(
             canvas.drawRect(left, rowTop, right, rowTop + rowH, bgPaint)
         }
 
-        // Inner Name Header Strip matching Screenshot_20261025_091738.jpg
         val cardLeft = left + 26f * sx
         val cardRight = left + 448f * sx
         val stripTop = rowTop + 22f * sx
@@ -740,9 +681,6 @@ class SketchWorkspaceView(
         }
     }
 
-    // ==========================================================================
-    // 3. EDIT PRESET / ADD PRESET MENU (Matches '+' Modifications + Centered Name Box + Delete)
-    // ==========================================================================
     private fun drawEditPresetMenu(canvas: Canvas, left: Float, top: Float, sx: Float) {
         val panelW = 622f * sx
         val headerH = 132f * sx
@@ -771,9 +709,6 @@ class SketchWorkspaceView(
         )
     }
 
-    // ==========================================================================
-    // 4. SAVE MENU (File Name Box + First-Time Save vs Save + Save Copy)
-    // ==========================================================================
     private fun drawSaveMenu(canvas: Canvas, left: Float, top: Float, sx: Float) {
         val panelW = if (project.isSavedOnce) 688f * sx else 580f * sx
         val headerH = 132f * sx
@@ -790,7 +725,6 @@ class SketchWorkspaceView(
 
         drawPopupHeader(canvas, left, top, panelW, headerH, sx, "Save", "BACK_TO_MAIN")
 
-        // File Name Option Box inside Save Menu (Sharp corners)
         val nameTop = top + headerH
         val nameBot = nameTop + nameRowH
         bgPaint.color = Color.rgb(238, 238, 238)
@@ -822,7 +756,6 @@ class SketchWorkspaceView(
         borderPaint.color = Color.rgb(222, 222, 222)
         canvas.drawLine(left, nameBot, right, nameBot, borderPaint)
 
-        // Row 1: "Save current sketch"
         val r1Top = nameBot
         val r1Bot = r1Top + itemRowH
         SketchIcons.drawPictureSaveIcon(canvas, left + 58f * sx, r1Top + itemRowH / 2f, 52f * sx, isCopy = false)
@@ -831,7 +764,6 @@ class SketchWorkspaceView(
         canvas.drawText("Save current sketch", left + 132f * sx, r1Top + itemRowH / 2f + 14f * sx, textPaint)
         hitZones.add(HitZone("ACTION_SAVE_CURRENT", RectF(left, r1Top, right, r1Bot)))
 
-        // Row 2 (Only shown if project is already saved!): "Save current sketch as a copy"
         if (project.isSavedOnce) {
             val r2Top = r1Bot
             val r2Bot = r2Top + itemRowH
@@ -844,9 +776,6 @@ class SketchWorkspaceView(
         }
     }
 
-    // ==========================================================================
-    // 5. SHARE / EXPORT MENUS (094900.jpg, 094850.jpg, 094906.jpg)
-    // ==========================================================================
     private fun drawShareExportMainMenu(canvas: Canvas, left: Float, top: Float, sx: Float) {
         val panelW = 622f * sx
         val rowH = 132f * sx
@@ -859,7 +788,6 @@ class SketchWorkspaceView(
 
         drawPopupHeader(canvas, left, top, panelW, rowH, sx, "Share / Export", "BACK_TO_MAIN")
 
-        // Row 1: Export to Files
         val r1Top = top + rowH
         val r1Bot = r1Top + rowH
         SketchIcons.drawFolderIcon(canvas, left + 58f * sx, r1Top + rowH / 2f, 52f * sx)
@@ -872,7 +800,6 @@ class SketchWorkspaceView(
         borderPaint.color = Color.rgb(225, 225, 225)
         canvas.drawLine(left, r1Bot, right, r1Bot, borderPaint)
 
-        // Row 2: Share
         val r2Top = r1Bot
         val r2Bot = r2Top + rowH
         SketchIcons.drawShareIcon(canvas, left + 58f * sx, r2Top + rowH / 2f, 48f * sx, withStar = false)
@@ -920,13 +847,9 @@ class SketchWorkspaceView(
                 borderPaint.color = Color.rgb(225, 225, 225)
                 canvas.drawLine(left, ry + rowH, right, ry + rowH, borderPaint)
             }
-            // Format items intentionally unclickable placeholders for now per specification
         }
     }
 
-    // ==========================================================================
-    // 6. MOD MENU (Single-Script Multi-Bundle Core Toggle Studio)
-    // ==========================================================================
     private fun drawModMenu(canvas: Canvas, left: Float, top: Float, sx: Float) {
         val panelW = 740f * sx
         val headerH = 132f * sx
@@ -947,7 +870,6 @@ class SketchWorkspaceView(
 
         drawPopupHeader(canvas, left, top, panelW, headerH, sx, "Mods (Core Bundles)", "BACK_TO_MAIN")
 
-        // Action Bar: [Paste Script]  [Edit Script]  [Reset]
         val barTop = top + headerH
         val barBot = barTop + toolbarH
         val pad = 18f * sx
@@ -975,7 +897,6 @@ class SketchWorkspaceView(
             hitZones.add(HitZone(act.first, bRect))
         }
 
-        // Status Line
         val statTop = barBot
         val statBot = statTop + statusH
         bgPaint.color = Color.rgb(234, 234, 234)
@@ -990,7 +911,6 @@ class SketchWorkspaceView(
             subTextPaint
         )
 
-        // Feature Bundle Rows (Each bundle toggles a group of core functions ON/OFF)
         var ry = statBot
         for ((bIdx, bundle) in modEngine.bundles.withIndex()) {
             if (ry + bundleRowH > bottom) break
@@ -1025,7 +945,6 @@ class SketchWorkspaceView(
                 subTextPaint
             )
 
-            // Sharp-Cornered ON / OFF Toggle Switch on the Right
             val togW = 124f * sx
             val togH = 66f * sx
             val togX = right - togW - 26f * sx
@@ -1035,7 +954,6 @@ class SketchWorkspaceView(
             bgPaint.color = if (bundle.enabled) Color.rgb(55, 116, 205) else Color.rgb(185, 185, 185)
             canvas.drawRect(togRect, bgPaint)
 
-            // Inner sharp slider block
             val knobW = togW * 0.44f
             val knobPad = 6f * sx
             val knobLeft = if (bundle.enabled) togRect.right - knobW - knobPad else togRect.left + knobPad
@@ -1058,9 +976,6 @@ class SketchWorkspaceView(
         }
     }
 
-    // ==========================================================================
-    // SHARED POPUP HEADER ('<' Back Button + Title, 0dp Vertical Gap)
-    // ==========================================================================
     private fun drawPopupHeader(
         canvas: Canvas,
         left: Float,
@@ -1090,9 +1005,6 @@ class SketchWorkspaceView(
         canvas.drawLine(left, bot, right, bot, borderPaint)
     }
 
-    // ==========================================================================
-    // TOUCH HANDLING, HOLD-TO-REORDER PRESETS & INTERACTIONS
-    // ==========================================================================
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val x = event.x
         val y = event.y
@@ -1107,7 +1019,6 @@ class SketchWorkspaceView(
                 isDraggingPreset = false
                 draggedPresetIndex = -1
 
-                // If touching inside Presets List tab, arm Hold-to-Reorder timer
                 if (popupState == TopPopupState.NEW_SKETCH &&
                     newSketchTab == NewSketchTab.LIST_PRESETS &&
                     presetScrollAreaBounds.contains(x, y)
@@ -1117,14 +1028,15 @@ class SketchWorkspaceView(
                     if (idx in customPresets.indices) {
                         val hitReorderHandle = findHitZone(x, y)?.id == "PRESET_REORDER"
                         val delayMs = if (hitReorderHandle) 120L else 380L
-                        longPressRunnable = Runnable {
+                        val r = Runnable {
                             isDraggingPreset = true
                             draggedPresetIndex = idx
                             dragCurrentY = y
                             parent?.requestDisallowInterceptTouchEvent(true)
                             invalidate()
                         }
-                        postDelayed(longPressRunnable, delayMs)
+                        longPressRunnable = r
+                        postDelayed(r, delayMs)
                     }
                 }
                 return true
@@ -1189,8 +1101,11 @@ class SketchWorkspaceView(
     }
 
     private fun cancelLongPress() {
-        longPressRunnable?.let { removeCallbacks(it) }
-        longPressRunnable = null
+        val r = longPressRunnable
+        if (r != null) {
+            removeCallbacks(r)
+            longPressRunnable = null
+        }
     }
 
     private fun findHitZone(x: Float, y: Float): HitZone? {
@@ -1483,9 +1398,6 @@ class SketchWorkspaceView(
         }
     }
 
-    // ==========================================================================
-    // PROJECT CREATION, SAVE / DISCARD PROMPT, & DIALOGS (Sharp Corners!)
-    // ==========================================================================
     private fun requestCreateNewProject(targetW: Int, targetH: Int) {
         popupState = TopPopupState.NONE
         invalidate()
@@ -1519,11 +1431,6 @@ class SketchWorkspaceView(
         invalidate()
     }
 
-    /**
-     * Checks if the current project has unsaved changes.
-     * If the canvas is completely empty/untouched (isDirty == false), executes onProceed immediately without prompting!
-     * Otherwise prompts Save / Discard / Cancel.
-     */
     private fun checkSaveOrDiscardIfDirty(onProceed: () -> Unit) {
         if (!project.isDirty) {
             onProceed()

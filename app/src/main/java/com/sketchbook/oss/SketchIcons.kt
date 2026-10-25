@@ -2,11 +2,9 @@ package com.sketchbook.oss
 
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
-import android.graphics.Shader
 import android.graphics.SweepGradient
 import kotlin.math.cos
 import kotlin.math.sin
@@ -28,11 +26,6 @@ object SketchIcons {
         isFakeBoldText = true
     }
 
-    // --------------------------------------------------------------------------
-    // TOP BAR 8 ICONS (Exact Match to Screenshot_20261025_084435.jpg)
-    // --------------------------------------------------------------------------
-
-    /** Button 1: Outlined box with 3 dots + 3 horizontal lines */
     fun drawTopIcon1Menu(c: Canvas, cx: Float, cy: Float, u: Float) {
         val w = u * 0.48f
         val h = u * 0.36f
@@ -51,7 +44,6 @@ object SketchIcons {
         }
     }
 
-    /** Button 2 & 3: Sweeping curved Undo / Redo arrow */
     fun drawTopIconUndoRedo(c: Canvas, cx: Float, cy: Float, u: Float, isRedo: Boolean, enabled: Boolean) {
         c.save()
         c.translate(cx, cy)
@@ -60,13 +52,10 @@ object SketchIcons {
         fillPaint.color = if (enabled) Color.rgb(118, 118, 118) else Color.rgb(200, 200, 200)
         val s = u * 0.34f
         val p = Path()
-        // Arrowhead pointing left
         p.moveTo(-s * 0.95f, s * 0.05f)
         p.lineTo(-s * 0.20f, -s * 0.52f)
         p.lineTo(-s * 0.20f, -s * 0.16f)
-        // Upper sweeping curve to right tail tip
         p.cubicTo(s * 0.45f, -s * 0.16f, s * 0.88f, -s * 0.32f, s * 0.95f, -s * 0.62f)
-        // Lower curve returning to arrowhead bottom neck
         p.cubicTo(s * 0.90f, s * 0.18f, s * 0.42f, s * 0.28f, -s * 0.20f, s * 0.25f)
         p.lineTo(-s * 0.20f, s * 0.56f)
         p.close()
@@ -74,7 +63,6 @@ object SketchIcons {
         c.restore()
     }
 
-    /** Button 4: 3x3 Grid of 9 outlined small squares */
     fun drawTopIcon4Grid(c: Canvas, cx: Float, cy: Float, u: Float) {
         strokePaint.color = Color.rgb(108, 108, 108)
         strokePaint.strokeWidth = u * 0.025f
@@ -92,14 +80,12 @@ object SketchIcons {
         }
     }
 
-    /** Button 5: Side-by-side Sharpened Pencil + Fountain Pen Nib */
     fun drawTopIcon5PencilPen(c: Canvas, cx: Float, cy: Float, u: Float) {
         val color = Color.rgb(104, 104, 104)
         strokePaint.color = color
         strokePaint.strokeWidth = u * 0.028f
         fillPaint.color = color
 
-        // Left: Pencil
         val px = cx - u * 0.15f
         val topY = cy - u * 0.25f
         val botY = cy + u * 0.28f
@@ -111,17 +97,14 @@ object SketchIcons {
             moveTo(px, topY)
             lineTo(px + pw, cy + u * 0.04f)
             lineTo(px + pw, botY)
-            // Wavy collar
             moveTo(px - pw, cy + u * 0.04f)
             quadTo(px, cy + u * 0.09f, px + pw, cy + u * 0.04f)
-            // Inner body lines
             moveTo(px - pw * 0.35f, cy + u * 0.06f)
             lineTo(px - pw * 0.35f, botY)
             moveTo(px + pw * 0.35f, cy + u * 0.06f)
             lineTo(px + pw * 0.35f, botY)
         }
         c.drawPath(pPath, strokePaint)
-        // Filled graphite tip cone
         val tipPath = Path().apply {
             moveTo(px, topY)
             lineTo(px - pw * 0.45f, topY + u * 0.12f)
@@ -130,7 +113,6 @@ object SketchIcons {
         }
         c.drawPath(tipPath, fillPaint)
 
-        // Right: Fountain Pen Nib
         val nx = cx + u * 0.16f
         val nTop = cy - u * 0.29f
         val nw = u * 0.13f
@@ -143,14 +125,11 @@ object SketchIcons {
             close()
         }
         c.drawPath(nibPath, strokePaint)
-        // Nib slit & breather circle
         c.drawLine(nx, nTop, nx, cy + u * 0.02f, strokePaint)
         c.drawCircle(nx, cy + u * 0.05f, u * 0.028f, strokePaint)
-        // Nib base collar
         c.drawRect(nx - nw * 0.72f, cy + u * 0.19f, nx + nw * 0.72f, cy + u * 0.25f, strokePaint)
     }
 
-    /** Button 6: Rainbow Color Ring */
     fun drawTopIcon6ColorWheel(c: Canvas, cx: Float, cy: Float, u: Float) {
         val radius = u * 0.23f
         val ringWidth = u * 0.075f
@@ -169,13 +148,11 @@ object SketchIcons {
         c.drawCircle(cx, cy, radius - ringWidth / 2f, strokePaint)
     }
 
-    /** Button 7: Stacked Layers Diamond Icon */
     fun drawTopIcon7Layers(c: Canvas, cx: Float, cy: Float, u: Float) {
         val color = Color.rgb(108, 108, 108)
         val rx = u * 0.25f
         val ry = u * 0.11f
 
-        // Bottom filled diamond
         val by = cy + u * 0.075f
         val botPath = Path().apply {
             moveTo(cx, by - ry)
@@ -187,7 +164,6 @@ object SketchIcons {
         fillPaint.color = color
         c.drawPath(botPath, fillPaint)
 
-        // White gap mask + Top stroked diamond
         val ty = cy - u * 0.065f
         val topPath = Path().apply {
             moveTo(cx, ty - ry)
@@ -203,7 +179,6 @@ object SketchIcons {
         c.drawPath(topPath, strokePaint)
     }
 
-    /** Button 8: Fullscreen Viewfinder Frame with 4 inner corner ticks */
     fun drawTopIcon8Viewfinder(c: Canvas, cx: Float, cy: Float, u: Float) {
         val w = u * 0.46f
         val h = u * 0.33f
@@ -218,23 +193,15 @@ object SketchIcons {
 
         val p = u * 0.06f
         val tick = u * 0.065f
-        // Top-left tick
         c.drawLine(l + p, t + p, l + p + tick, t + p, strokePaint)
         c.drawLine(l + p, t + p, l + p, t + p + tick, strokePaint)
-        // Top-right tick
         c.drawLine(r - p - tick, t + p, r - p, t + p, strokePaint)
         c.drawLine(r - p, t + p, r - p, t + p + tick, strokePaint)
-        // Bottom-left tick
         c.drawLine(l + p, b - p, l + p + tick, b - p, strokePaint)
         c.drawLine(l + p, b - p - tick, l + p, b - p, strokePaint)
-        // Bottom-right tick
         c.drawLine(r - p - tick, b - p, r - p, b - p, strokePaint)
         c.drawLine(r - p, b - p - tick, r - p, b - p, strokePaint)
     }
-
-    // --------------------------------------------------------------------------
-    // BOTTOM LAGOON DOT & POPUP MENU ICONS
-    // --------------------------------------------------------------------------
 
     fun drawBottomCenterDot(c: Canvas, cx: Float, cy: Float, radius: Float) {
         strokePaint.color = Color.argb(185, 222, 222, 222)
@@ -253,17 +220,6 @@ object SketchIcons {
             moveTo(cx + size * 0.25f, cy - size * 0.45f)
             lineTo(cx - size * 0.25f, cy)
             lineTo(cx + size * 0.25f, cy + size * 0.45f)
-        }
-        c.drawPath(p, strokePaint)
-    }
-
-    fun drawRightChevron(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(95, 95, 95)) {
-        strokePaint.color = color
-        strokePaint.strokeWidth = size * 0.13f
-        val p = Path().apply {
-            moveTo(cx - size * 0.25f, cy - size * 0.45f)
-            lineTo(cx + size * 0.25f, cy)
-            lineTo(cx - size * 0.25f, cy + size * 0.45f)
         }
         c.drawPath(p, strokePaint)
     }
@@ -291,7 +247,6 @@ object SketchIcons {
         }
     }
 
-    /** Save Icon: tray with downward arrow and indicator dot */
     fun drawSaveIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
         val color = Color.rgb(95, 95, 95)
         strokePaint.color = color
@@ -299,7 +254,6 @@ object SketchIcons {
         val w = size * 0.78f
         val h = size * 0.36f
         c.drawRect(cx - w / 2f, cy + size * 0.05f, cx + w / 2f, cy + size * 0.05f + h, strokePaint)
-        // Down arrow above tray
         c.drawLine(cx, cy - size * 0.44f, cx, cy - size * 0.02f, strokePaint)
         c.drawLine(cx - size * 0.18f, cy - size * 0.18f, cx, cy - size * 0.02f, strokePaint)
         c.drawLine(cx + size * 0.18f, cy - size * 0.18f, cx, cy - size * 0.02f, strokePaint)
@@ -307,7 +261,6 @@ object SketchIcons {
         c.drawCircle(cx + w * 0.25f, cy + size * 0.23f, size * 0.045f, fillPaint)
     }
 
-    /** Import Icon: open tray with downward arrow */
     fun drawImportIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
         val color = Color.rgb(95, 95, 95)
         strokePaint.color = color
@@ -322,11 +275,9 @@ object SketchIcons {
         c.drawLine(cx + size * 0.20f, cy - size * 0.04f, cx, cy + size * 0.16f, strokePaint)
     }
 
-    /** Gear Icon for Preferences & Preset Settings */
     fun drawGearIcon(c: Canvas, cx: Float, cy: Float, size: Float, filled: Boolean = true) {
         val color = Color.rgb(98, 98, 98)
         strokePaint.color = color
-        strokePaint.strokeWidth = size * 0.10f
         val outerR = size * 0.42f
         val innerR = size * 0.20f
         for (i in 0 until 8) {
@@ -345,7 +296,6 @@ object SketchIcons {
         }
     }
 
-    /** Share Icon with optional orange star badge */
     fun drawShareIcon(c: Canvas, cx: Float, cy: Float, size: Float, withStar: Boolean) {
         val color = Color.rgb(95, 95, 95)
         strokePaint.color = color
@@ -359,7 +309,6 @@ object SketchIcons {
         c.drawLine(cx - w / 2f, top, cx - w * 0.18f, top, strokePaint)
         c.drawLine(cx + w * 0.18f, top, cx + w / 2f, top, strokePaint)
 
-        // Upward arrow
         c.drawLine(cx, cy + size * 0.18f, cx, cy - size * 0.44f, strokePaint)
         c.drawLine(cx - size * 0.20f, cy - size * 0.24f, cx, cy - size * 0.44f, strokePaint)
         c.drawLine(cx + size * 0.20f, cy - size * 0.24f, cx, cy - size * 0.44f, strokePaint)
@@ -383,7 +332,6 @@ object SketchIcons {
         c.drawPath(p, fillPaint)
     }
 
-    /** Mods Menu Icon: Sharp Isometric Sliders / Module Grid */
     fun drawModMenuIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
         val color = Color.rgb(90, 90, 90)
         strokePaint.color = color
@@ -399,7 +347,6 @@ object SketchIcons {
         }
     }
 
-    /** Project Name Tag / Rename Icon */
     fun drawProjectNameIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
         val color = Color.rgb(95, 95, 95)
         strokePaint.color = color
@@ -412,7 +359,6 @@ object SketchIcons {
         c.drawLine(cx - w * 0.25f, cy + h * 0.28f, cx + w * 0.05f, cy + h * 0.28f, strokePaint)
     }
 
-    /** Canvas Preview Rotate Icon (Square with arrow on right side, matching 091729.jpg) */
     fun drawCanvasRotateIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
         val color = Color.rgb(110, 110, 110)
         strokePaint.color = color
@@ -426,7 +372,6 @@ object SketchIcons {
             lineTo(cx + s * 0.65f, cy + s * 0.15f)
         }
         c.drawPath(p, strokePaint)
-        // Downward arrowhead at (cx + s*0.65, cy + s*0.20)
         val ax = cx + s * 0.65f
         val ay = cy + s * 0.22f
         val aw = size * 0.18f
@@ -434,11 +379,6 @@ object SketchIcons {
         c.drawLine(ax + aw, ay - aw, ax, ay, strokePaint)
     }
 
-    /**
-     * Aspect Ratio Link Icon between Width & Height boxes:
-     * Unlocked: () curved open link brackets
-     * Locked:   (-) curved link brackets with solid center lock line
-     */
     fun drawLinkRatioIcon(c: Canvas, cx: Float, cy: Float, size: Float, locked: Boolean) {
         val color = if (locked) Color.rgb(55, 116, 205) else Color.rgb(96, 96, 96)
         strokePaint.color = color
@@ -447,43 +387,35 @@ object SketchIcons {
 
         val w = size * 0.46f
         val h = size * 0.28f
-        // Left curved bracket '('
         val leftRect = RectF(cx - w, cy - h, cx - w * 0.12f, cy + h)
         c.drawArc(leftRect, 85f, 190f, false, strokePaint)
 
-        // Right curved bracket ')'
         val rightRect = RectF(cx + w * 0.12f, cy - h, cx + w, cy + h)
         c.drawArc(rightRect, -95f, 190f, false, strokePaint)
 
         if (locked) {
-            // Center horizontal bar '-' making it '(-)'
             c.drawLine(cx - w * 0.42f, cy, cx + w * 0.42f, cy, strokePaint)
         }
         strokePaint.strokeCap = Paint.Cap.SQUARE
     }
 
-    /** Reorder Handle Icon (in place of old Delete icon on preset rows) */
     fun drawReorderIcon(c: Canvas, cx: Float, cy: Float, size: Float, active: Boolean = false) {
         val color = if (active) Color.rgb(55, 116, 205) else Color.rgb(105, 105, 105)
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.09f
         val w = size * 0.48f
-        // Three grip bars
         c.drawLine(cx - w / 2f, cy - size * 0.14f, cx + w / 2f, cy - size * 0.14f, strokePaint)
         c.drawLine(cx - w / 2f, cy, cx + w / 2f, cy, strokePaint)
         c.drawLine(cx - w / 2f, cy + size * 0.14f, cx + w / 2f, cy + size * 0.14f, strokePaint)
-        // Up arrow tip
         val aw = size * 0.16f
         val topY = cy - size * 0.42f
         c.drawLine(cx - aw, topY + aw, cx, topY, strokePaint)
         c.drawLine(cx + aw, topY + aw, cx, topY, strokePaint)
-        // Down arrow tip
         val botY = cy + size * 0.42f
         c.drawLine(cx - aw, botY - aw, cx, botY, strokePaint)
         c.drawLine(cx + aw, botY - aw, cx, botY, strokePaint)
     }
 
-    /** Trash / Delete Icon (used inside Edit Preset settings menu) */
     fun drawTrashIcon(c: Canvas, cx: Float, cy: Float, size: Float, color: Int = Color.rgb(190, 50, 50)) {
         strokePaint.color = color
         strokePaint.strokeWidth = size * 0.09f
@@ -496,7 +428,6 @@ object SketchIcons {
         c.drawLine(cx + w * 0.16f, cy - h * 0.12f, cx + w * 0.16f, cy + h * 0.34f, strokePaint)
     }
 
-    /** Screen Phone Icon & Last Dimension Icon in Presets Tab */
     fun drawPhoneScreenIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
         strokePaint.color = Color.rgb(95, 95, 95)
         strokePaint.strokeWidth = size * 0.08f
@@ -511,16 +442,13 @@ object SketchIcons {
         strokePaint.strokeWidth = size * 0.075f
         val s = size * 0.64f
         c.drawRect(cx - s * 0.55f, cy - s * 0.50f, cx + s * 0.35f, cy + s * 0.30f, strokePaint)
-        // Return arrow inside
         c.drawLine(cx - s * 0.32f, cy - s * 0.10f, cx + s * 0.12f, cy - s * 0.10f, strokePaint)
         c.drawLine(cx - s * 0.32f, cy - s * 0.10f, cx - s * 0.14f, cy - s * 0.28f, strokePaint)
         c.drawLine(cx - s * 0.32f, cy - s * 0.10f, cx - s * 0.14f, cy + s * 0.08f, strokePaint)
-        // Dimension T-bars on right & bottom
         c.drawLine(cx + s * 0.52f, cy - s * 0.50f, cx + s * 0.52f, cy + s * 0.30f, strokePaint)
         c.drawLine(cx - s * 0.55f, cy + s * 0.46f, cx + s * 0.35f, cy + s * 0.46f, strokePaint)
     }
 
-    /** Save Menu Picture Icons (Single & Copy) */
     fun drawPictureSaveIcon(c: Canvas, cx: Float, cy: Float, size: Float, isCopy: Boolean) {
         val color = Color.rgb(98, 98, 98)
         strokePaint.color = color
@@ -532,7 +460,6 @@ object SketchIcons {
         val oy = if (isCopy) size * 0.08f else 0f
 
         if (isCopy) {
-            // Back card outline
             c.drawRect(cx - s / 2f - ox, cy - s / 2f - oy, cx + s / 2f - ox, cy + s / 2f - oy, strokePaint)
             fillPaint.color = Color.rgb(243, 243, 243)
             c.drawRect(cx - s / 2f + ox, cy - s / 2f + oy, cx + s / 2f + ox, cy + s / 2f + oy, fillPaint)
@@ -545,7 +472,6 @@ object SketchIcons {
         val b = cy + s / 2f + oy
         c.drawRect(l, t, r, b, strokePaint)
 
-        // Mountain silhouette inside frame
         val mPath = Path().apply {
             moveTo(l, b)
             lineTo(l + (r - l) * 0.32f, t + (b - t) * 0.48f)
@@ -557,7 +483,6 @@ object SketchIcons {
         c.drawPath(mPath, fillPaint)
     }
 
-    /** Folder Icon for Export to Files */
     fun drawFolderIcon(c: Canvas, cx: Float, cy: Float, size: Float) {
         strokePaint.color = Color.rgb(98, 98, 98)
         strokePaint.strokeWidth = size * 0.09f
@@ -577,7 +502,6 @@ object SketchIcons {
         c.drawPath(p, strokePaint)
     }
 
-    /** File Format Icons (TIF, PSD, PNG, JPG, PDF) matching 094850.jpg */
     fun drawFileFormatIcon(c: Canvas, cx: Float, cy: Float, size: Float, label: String, stacked: Boolean, starred: Boolean) {
         val color = Color.rgb(92, 92, 92)
         strokePaint.color = color
