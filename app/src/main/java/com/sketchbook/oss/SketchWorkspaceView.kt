@@ -124,6 +124,56 @@ class SketchWorkspaceView(
     private var smudgeCarryColor: Int = Color.WHITE
 
     
+    
+    private val liveAgents = mutableListOf<LivePhysicsAgent>()
+    private var lastAgentTickNano: Long = System.nanoTime()
+
+    private fun stepAndPaintLivePhysicsAgents() {
+        val now = System.nanoTime()
+        val dt = ((now - lastAgentTickNano) / 1_000_000_000.0f).coerceIn(0.004f, 0.05f)
+        lastAgentTickNano = now
+        if (liveAgents.isEmpty()) return
+
+        val bmp = project.ensureCanvasBitmap()
+        val c = Canvas(bmp)
+        val dstOut = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+        val iter = liveAgents.iterator()
+        while (iter.hasNext()) {
+            val ag = iter.next()
+            ag.remainingSec -= dt
+            if (ag.remainingSec <= 0f || ag.x !in 0f..bmp.width.toFloat() || ag.y !in 0f..bmp.height.toFloat()) {
+                iter.remove()
+                continue
+            }
+            val lifeRatio = (ag.remainingSec / ag.totalSec).coerceIn(0f, 1f)
+            val prevX = ag.x
+            val prevY = ag.y
+
+            if (abs(ag.curlStrength) > 0.1f) {
+                val nAng = UnifiedBrushRenderer.shaderVM.noise2D(ag.x * 0.025f, ag.y * 0.025f) * Math.PI.toFloat() * 2.5f
+                ag.vx += cos(nAng) * ag.curlStrength * dt
+                ag.vy += sin(nAng) * ag.curlStrength * dt
+            }
+            ag.vy += ag.gravity * dt
+            ag.vx *= 0.985f
+            ag.vy *= 0.985f
+            ag.x += ag.vx * dt
+            ag.y += ag.vy * dt
+
+            val curR = (ag.radius * (0.25f + 0.75f * lifeRatio)).coerceAtLeast(0.8f)
+            val curA = (ag.alpha * lifeRatio * 220f).roundToInt().coerceIn(2, 255)
+            val col = ColorStudioState.hslToColor(((ag.hue % 360f) + 360f) % 360f, ag.sat.coerceIn(0f, 1f), ag.lit.coerceIn(0f, 1f))
+
+            strokePaint.xfermode = if (ag.isErase) dstOut else null
+            strokePaint.style = Paint.Style.STROKE
+            strokePaint.strokeWidth = curR * 2f
+            strokePaint.color = if (ag.isErase) Color.argb(curA, 0, 0, 0) else Color.argb(curA, Color.red(col), Color.green(col), Color.blue(col))
+            c.drawLine(prevX, prevY, ag.x, ag.y, strokePaint)
+            strokePaint.style = Paint.Style.FILL
+            strokePaint.xfermode = null
+        }
+    }
+
     private val procHistoryPts = mutableListOf<PointF>()
     private var activeTemporalStroke: TemporalAnimatedStroke? = null
 
@@ -323,6 +373,7 @@ class SketchWorkspaceView(
         bgPaint.color = pal.paperTint
         canvas.drawRect(0.5f, 0.5f, bmp.width - 0.5f, bmp.height - 0.5f, bgPaint)
         canvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
+        stepAndPaintLivePhysicsAgents()
         renderTemporalAnimatedStrokes(canvas, timeSec)
 
         modEngine.renderCanvasOverlays(canvas, bmpRect, project)
@@ -391,7 +442,8 @@ class SketchWorkspaceView(
             canvas.drawText(bannerMsg, w / 2f, by + bh * 0.64f, textPaint)
         }
 
-        if (modEngine.hasActiveAnimations() || project.temporalStrokes.isNotEmpty()) {
+        if (modEngine.hasActiveAnimations() || project.temporalStrokes.isNotEmpty() || liveAgents.isNotEmpty()) {
+            lastAgentTickNano = System.nanoTime()
             postInvalidateOnAnimation()
         }
     }
@@ -1706,6 +1758,7 @@ class SketchWorkspaceView(
                     ts.nodes.add(TemporalDabNode(mid1X, mid1Y, 0f, 1f, curRadius, dabAlpha, 0f))
                 }
             } else {
+                UnifiedBrushRenderer.livePhysicsAgents = liveAgents
                 UnifiedBrushRenderer.renderSingleDab(
                     canvas = c,
                     brush = brush,
@@ -1756,7 +1809,8 @@ class SketchWorkspaceView(
                         )
                     }
                 } else {
-                    UnifiedBrushRenderer.renderSingleDab(
+                    UnifiedBrushRenderer.livePhysicsAgents = liveAgents
+                UnifiedBrushRenderer.renderSingleDab(
                         canvas = c,
                         brush = brush,
                         x = x,

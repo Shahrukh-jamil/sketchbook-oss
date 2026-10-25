@@ -20,6 +20,10 @@ import kotlin.math.sin
 import kotlin.random.Random
 
 object UnifiedBrushRenderer {
+    val shaderVM = BrushShaderVM()
+    val previewRadiiHistory = mutableListOf<Float>()
+    val canvasRadiiHistory = mutableListOf<Float>()
+    var livePhysicsAgents: MutableList<LivePhysicsAgent>? = null
 
     private val dabPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
@@ -111,6 +115,62 @@ object UnifiedBrushRenderer {
         val cr = if (isEraseMode) 0 else Color.red(baseColor)
         val cg = if (isEraseMode) 0 else Color.green(baseColor)
         val cb = if (isEraseMode) 0 else Color.blue(baseColor)
+
+        
+        // Programmable Brush Shader VM Execution (when `code` parameter is defined in modParams!)
+        val vmCode = brush.modParams["code"]
+        if (!vmCode.isNullOrBlank()) {
+            val radAngle = Math.toRadians(tangentDeg.toDouble())
+            val tx = cos(radAngle).toFloat()
+            val ty = sin(radAngle).toFloat()
+            val nx = -ty
+            val ny = tx
+            val histList = procHistory ?: mutableListOf()
+            val radList = if (deterministicRandom) previewRadiiHistory else canvasRadiiHistory
+            if (dabIndex == 0) {
+                histList.clear()
+                radList.clear()
+                shaderVM.resetMemory()
+            }
+            histList.add(PointF(drawX, drawY))
+            radList.add(rad)
+            if (histList.size > 180) {
+                histList.removeAt(0)
+                if (radList.isNotEmpty()) radList.removeAt(0)
+            }
+            val hsl = ColorStudioState.colorToHsl(baseColor)
+            val timeNow = (System.nanoTime() / 1_000_000_000.0).toFloat()
+            shaderVM.executeDabProgram(
+                code = vmCode,
+                canvas = canvas,
+                x = drawX,
+                y = drawY,
+                nx = nx,
+                ny = ny,
+                tx = tx,
+                ty = ty,
+                tangentDeg = tangentDeg,
+                radius = rad,
+                pressure = pClamped,
+                speed = 1f,
+                dabIndex = dabIndex,
+                timeSec = timeNow,
+                baseHue = hsl[0],
+                baseSat = hsl[1],
+                baseLit = hsl[2],
+                baseAlpha = (dabAlpha / 255f).coerceIn(0.02f, 1f),
+                isErase = isEraseMode,
+                deterministicRandom = deterministicRandom,
+                historyPts = histList,
+                historyRadii = radList,
+                canvasBitmap = smudgeBitmap,
+                activeAgentsOut = if (deterministicRandom) null else livePhysicsAgents,
+                fillPaint = dabPaint,
+                strokePaint = strokeLinePaint,
+                dstOutXfer = dstOutXfer
+            )
+            return
+        }
 
         // 2. Mod Mode: Procedural Web
         if (brush.modMode == "procedural_web") {

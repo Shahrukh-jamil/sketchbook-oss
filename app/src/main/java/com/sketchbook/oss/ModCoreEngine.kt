@@ -45,7 +45,7 @@ data class ModUiPalette(
 
 class ModCoreEngine(private val context: Context, private val onStateChanged: () -> Unit) {
 
-    private val prefs = context.getSharedPreferences("sketchbook_mod_core_v4", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("sketchbook_mod_core_v5", Context.MODE_PRIVATE)
     val bundles = mutableListOf<ModFeatureBundle>()
     var activeScriptSource: String = ""
         private set
@@ -518,21 +518,22 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
 
     companion object {
         val DEFAULT_MULTI_BUNDLE_SCRIPT =
-            "# SketchBook OSS - Unified Multi-Bundle Core Mod Script\n" +
-            "@bundle id=\"mod_brushes_pack\" title=\"SOTA Mod Brushes Pack\" default=true desc=\"Injects Procedural Synapse Web, Time-Animated Chrono Plasma & Lotus Nib\"\n" +
-            "fn inject_brush id=\"mb_synapse\" name=\"Synapse Web\" mode=\"procedural_web\" size=38 opacity=92 spacing=10 reach=135 branches=3\n" +
-            "fn inject_brush id=\"mb_chrono\" name=\"Chrono Plasma\" mode=\"time_animated\" size=46 opacity=95 spacing=14 speed=3.8 wave=14 sparks=3 hue_shift=45\n" +
-            "fn inject_brush id=\"mb_lotus\" name=\"Lotus Crescent Nib\" mode=\"custom_harmonic_nib\" size=64 opacity=95 spacing=12 lobes=5 core_opac=96 petal_opac=36 feather_smooth=88\n\n" +
+            "# SketchBook OSS - Programmable Brush Shader VM & Core Mod Script\n" +
+            "@bundle id=\"vm_shader_brushes\" title=\"Programmable VM Shader Brushes (8 Unique Engines)\" default=true desc=\"True code-driven brushes: 3D Pipe, Gravity Drip, Mycelium Roots, 7-Nib Rake, Dragon Scales & Glitch\"\n" +
+            "fn inject_brush id=\"vm_3d_pipe\" name=\"3D Specular Pipe\" mode=\"vm\" size=58 opacity=100 spacing=4 code=\"ribbon(1, 1.0, 0.0, h, s, l*0.35, a); ribbon(1, 0.72, -0.08, h, s, l*0.75, a); ribbon(1, 0.42, -0.18, h, s, min(0.95, l*1.15+0.15), a); ribbon(1, 0.16, -0.26, h, s*0.25, 0.96, a*0.95);\"\n" +
+            "fn inject_brush id=\"vm_street_drip\" name=\"Street-Art Gravity Drip\" mode=\"vm\" size=44 opacity=95 spacing=8 code=\"circle(0, 0, r, h, s, l, a, 0.35); for(k, 0, 5, 1) { var ang2 = rand()*6.28; var d2 = r*(0.6+rand()*0.9); circle(cos(ang2)*d2, sin(ang2)*d2, r*(0.06+rand()*0.12), h, s, l, a*0.8, 0.1); }; if(rand() > 0.78) { drip(srnd()*r*0.4, r*0.3, 0, 45+rand()*60, r*(0.10+rand()*0.12), 1.4+rand()*1.8, 140, 0, h, s, l, a*0.92); };\"\n" +
+            "fn inject_brush id=\"vm_mycelium\" name=\"Living Mycelium Roots\" mode=\"vm\" size=36 opacity=92 spacing=14 code=\"circle(0, 0, r*0.35, h, s, l, a, 0.4); if(rand() > 0.35) { var dir = rad + 1.57*srnd(); drip(0, 0, cos(dir)*75, sin(dir)*75, r*0.18, 1.2+rand()*1.2, 0, 260, h+srnd()*25, s, l, a*0.85); };\"\n" +
+            "fn inject_brush id=\"vm_rake7\" name=\"7-Nib Calligrapher Rake\" mode=\"vm\" size=68 opacity=92 spacing=4 code=\"for(k, -3, 3, 1) { var off = k*0.32; var w = 0.18*(1.0 - abs(k)*0.12); ribbon(1, w, off, h+k*6, s, clamp(l+k*0.04, 0.08, 0.92), a); };\"\n" +
+            "fn inject_brush id=\"vm_dragon_scale\" name=\"Dragon Scale Armor\" mode=\"vm\" size=76 opacity=96 spacing=38 code=\"var rows = 2; for(k, -1, 1, 1) { var oy = (k + mod(i, 2)*0.5)*r*0.58; var px = nx*oy; var py = ny*oy; poly(6, px, py, r*0.48, ang, h, s, l*0.35, a, 1); poly(6, px, py, r*0.40, ang, h+k*10, s, clamp(l*0.95+0.1, 0.1, 0.9), a, 1); oval(px+tx*r*0.1, py+ty*r*0.1, r*0.22, r*0.12, ang, h, s*0.4, min(0.98, l+0.35), a*0.85, 0.3); };\"\n" +
+            "fn inject_brush id=\"vm_glitch\" name=\"Chromatic Glitch Smear\" mode=\"vm\" size=64 opacity=90 spacing=12 code=\"var ch = pickH(srnd()*r, srnd()*r); var cs = pickS(0, 0); var cl = pickL(0, 0); for(k, 0, 4, 1) { var sy = srnd()*r*0.9; var sw = r*(0.6+rand()*1.2); var sh = r*(0.06+rand()*0.14); line(-sw-r*0.25, sy, sw-r*0.25, sy, sh, 0, 0.95, 0.55, a*0.55); line(-sw+r*0.25, sy, sw+r*0.25, sy, sh, 190, 0.95, 0.55, a*0.55); line(-sw, sy, sw, sy, sh*0.8, ch, cs, cl, a*0.85); };\"\n" +
+            "fn inject_brush id=\"vm_smoke\" name=\"Perlin Volumetric Smoke\" mode=\"vm\" size=82 opacity=75 spacing=14 code=\"for(k, 0, 5, 1) { var nx2 = noise(x*0.018+k*3.1, y*0.018)*r*1.1; var ny2 = noise(y*0.018+k*5.7, x*0.018)*r*1.1; circle(nx2, ny2, r*(0.45+0.35*abs(noise(i*0.2, k))), h+noise(i*0.1, k)*20, s*0.7, clamp(l+k*0.05, 0.1, 0.95), a*0.28, 0.92); };\"\n" +
+            "fn inject_brush id=\"vm_zipper\" name=\"Stitched Leather Seam\" mode=\"vm\" size=52 opacity=96 spacing=28 code=\"ribbon(1, 0.22, 0.0, h, s, l*0.35, a); var side = (mod(i, 2)*2 - 1); line(0, 0, nx*r*0.75*side - tx*r*0.25, ny*r*0.75*side - ty*r*0.25, r*0.14, h, s*0.5, min(0.95, l+0.35), a); circle(nx*r*0.75*side - tx*r*0.25, ny*r*0.75*side - ty*r*0.25, r*0.11, h, s, l*0.25, a, 0.1);\"\n\n" +
             "@bundle id=\"obsidian_dark_ui\" title=\"Obsidian Dark Pro UI\" default=false desc=\"Transforms top bar, popups, icons & backdrop into carbon dark mode\"\n" +
             "fn ui_theme topbar=\"#1B1E26\" topbar_active=\"#2B303C\" popup_bg=\"#232731\" popup_header=\"#171A21\" card_bg=\"#2C313E\" input_bg=\"#14171D\" text_primary=\"#ECEFF4\" text_secondary=\"#9AA5B8\" icon_tint=\"#D8DEE9\" accent=\"#00B8D4\" border=\"#383F4E\" backdrop=\"#0F1116\"\n\n" +
-            "@bundle id=\"rosegold_velvet_ui\" title=\"Rose-Gold & Espresso UI\" default=false desc=\"Warm luxury rose-gold menus, copper accents & espresso backdrop\"\n" +
-            "fn ui_theme topbar=\"#F7ECE8\" topbar_active=\"#EAD5CE\" popup_bg=\"#FAF2EF\" popup_header=\"#EFE0DA\" card_bg=\"#FFFFFF\" input_bg=\"#FFFFFF\" text_primary=\"#3B2321\" text_secondary=\"#8C6560\" icon_tint=\"#6E4742\" accent=\"#D46A6A\" border=\"#DFC4BC\" backdrop=\"#362624\"\n\n" +
             "@bundle id=\"anim_aurora_fx\" title=\"Animated Aurora & Laser FX\" default=false desc=\"60fps flowing aurora shimmer on topbar + laser popup border + dot orbit\"\n" +
             "fn ui_anim_aurora c1=\"#6600E5FF\" c2=\"#667C4DFF\" c3=\"#66FF4081\"\n" +
             "fn ui_anim_laser_border color=\"#00E5FF\"\n" +
             "fn ui_anim_dot_orbit color=\"#00E5FF\"\n\n" +
-            "@bundle id=\"anim_bokeh_fx\" title=\"Animated Ambient Bokeh\" default=false desc=\"Drifting glowing ambient particles across the workspace backdrop\"\n" +
-            "fn ui_anim_particles color=\"#00E5FF\" count=22\n\n" +
             "@bundle id=\"composition_guides\" title=\"Composition & Grid Guides\" default=false desc=\"Rule-of-thirds + 12-div subgrid + safe frame\"\n" +
             "fn canvas_grid divisions=3 color=\"#662B6CB0\" stroke=2.5\n" +
             "fn canvas_grid divisions=12 color=\"#282B6CB0\" stroke=1.0\n" +
