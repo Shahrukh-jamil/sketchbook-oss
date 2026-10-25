@@ -51,7 +51,7 @@ data class CanvasPreset(
 )
 
 class SketchProjectState(
-    var name: String = "Untitled-1",
+    var name: String = nextDefaultName(),
     var width: Int = 1080,
     var height: Int = 2408,
     var isDirty: Boolean = false,
@@ -62,36 +62,48 @@ class SketchProjectState(
     private val undoStack = ArrayDeque<Bitmap>()
     private val redoStack = ArrayDeque<Bitmap>()
 
+    /**
+     * Allocates the project canvas bitmap at exact 1:1 pixel dimensions (supports 4K+)
+     * with a safe fallback only if the device GPU/RAM limit is exceeded.
+     */
     fun ensureCanvasBitmap(): Bitmap {
-        val maxSide = 2560
-        val scale = if (width > maxSide || height > maxSide) {
-            maxSide.toFloat() / max(width, height).toFloat()
-        } else 1f
-        val bw = (width * scale).toInt().coerceAtLeast(1)
-        val bh = (height * scale).toInt().coerceAtLeast(1)
+        val targetW = width.coerceIn(1, 8192)
+        val targetH = height.coerceIn(1, 8192)
 
         var bmp = canvasBitmap
-        if (bmp == null || bmp.isRecycled || bmp.width != bw || bmp.height != bh) {
-            bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
-            val c = Canvas(bmp)
+        if (bmp == null || bmp.isRecycled || bmp.width != targetW || bmp.height != targetH) {
+            bmp = try {
+                Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+            } catch (_: OutOfMemoryError) {
+                System.gc()
+                Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+            }
+            val c = Canvas(bmp!!)
             c.drawColor(Color.TRANSPARENT)
             canvasBitmap = bmp
         }
-        return bmp
+        return bmp!!
     }
 
     fun pushUndoSnapshot() {
         val current = canvasBitmap ?: return
         if (current.isRecycled) return
-        val copy = current.copy(Bitmap.Config.ARGB_8888, true)
-        undoStack.addLast(copy)
-        while (undoStack.size > 18) {
-            undoStack.removeFirst().recycle()
+        try {
+            val copy = current.copy(Bitmap.Config.ARGB_8888, true)
+            undoStack.addLast(copy)
+            // Dynamically cap undo history to ~160MB total to support 4K canvases without OOM
+            val bytesPerBmp = (current.width.toLong() * current.height.toLong() * 4L).coerceAtLeast(1L)
+            val maxSteps = (160_000_000L / bytesPerBmp).toInt().coerceIn(3, 18)
+            while (undoStack.size > maxSteps) {
+                undoStack.removeFirst().recycle()
+            }
+            for (b in redoStack) {
+                if (!b.isRecycled) b.recycle()
+            }
+            redoStack.clear()
+        } catch (_: OutOfMemoryError) {
+            if (undoStack.isNotEmpty()) undoStack.removeFirst().recycle()
         }
-        for (b in redoStack) {
-            if (!b.isRecycled) b.recycle()
-        }
-        redoStack.clear()
     }
 
     fun canUndo(): Boolean = undoStack.isNotEmpty()
@@ -134,6 +146,12 @@ class SketchProjectState(
     }
 
     companion object {
+        private var untitledCounter = 1
+
+        fun nextDefaultName(): String {
+            return "Untitled-${untitledCounter++}"
+        }
+
         fun calculateMaxLayers(w: Int, h: Int): Int {
             if (w <= 0 || h <= 0) return 0
             val mpx = (w.toLong() * h.toLong()) / 1_000_000f
@@ -142,10 +160,6 @@ class SketchProjectState(
             return min(250, max(4, raw))
         }
 
-        /**
-         * Returns the exact hardware screen pixel resolution (e.g. 1080 x 2408)
-         * without subtracting status bar or navigation bar insets.
-         */
         fun getHardwareScreenResolution(context: Context): Pair<Int, Int> {
             return try {
                 val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager

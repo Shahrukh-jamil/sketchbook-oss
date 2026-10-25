@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.RectF
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -85,6 +86,9 @@ object ProjectStorageManager {
             .apply()
     }
 
+    /**
+     * Saves the project at its exact native pixel dimensions (e.g. 3840x2160 or 4096x4096).
+     */
     fun saveProjectToDevice(
         context: Context,
         project: SketchProjectState,
@@ -99,11 +103,18 @@ object ProjectStorageManager {
                 safeBase
             }
 
+            val exactW = project.width.coerceAtLeast(1)
+            val exactH = project.height.coerceAtLeast(1)
             val layerBmp = project.ensureCanvasBitmap()
-            val outBmp = Bitmap.createBitmap(layerBmp.width, layerBmp.height, Bitmap.Config.ARGB_8888)
+
+            val outBmp = Bitmap.createBitmap(exactW, exactH, Bitmap.Config.ARGB_8888)
             val c = Canvas(outBmp)
             c.drawColor(paperColor)
-            c.drawBitmap(layerBmp, 0f, 0f, null)
+            if (layerBmp.width == exactW && layerBmp.height == exactH) {
+                c.drawBitmap(layerBmp, 0f, 0f, null)
+            } else {
+                c.drawBitmap(layerBmp, null, RectF(0f, 0f, exactW.toFloat(), exactH.toFloat()), null)
+            }
 
             val savedLocation = savePngToMediaStoreOrDisk(context, outBmp, finalName)
 
@@ -111,11 +122,11 @@ object ProjectStorageManager {
             if (!tiffDir.exists()) tiffDir.mkdirs()
             val tiffFile = File(tiffDir, "$finalName.tif")
             FileOutputStream(tiffFile).use { fos ->
-                writeSketchbookTiff(outBmp, fos, project.width, project.height)
+                writeSketchbookTiff(outBmp, fos, exactW, exactH)
             }
 
             outBmp.recycle()
-            Result.success(savedLocation)
+            Result.success("$savedLocation (${exactW}×${exactH})")
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -165,9 +176,6 @@ object ProjectStorageManager {
     fun writeSketchbookTiff(bmp: Bitmap, out: OutputStream, logicalW: Int, logicalH: Int) {
         val w = bmp.width
         val h = bmp.height
-        val pixels = IntArray(w * h)
-        bmp.getPixels(pixels, 0, w, 0, 0, w, h)
-
         val imageByteCount = w * h * 4
         val softwareStr = "Autodesk SketchBook OSS ($logicalW x $logicalH)\u0000"
         val softwareBytes = softwareStr.toByteArray(Charsets.US_ASCII)
@@ -225,12 +233,14 @@ object ProjectStorageManager {
 
         out.write(headerBuf.array())
 
+        // Row-by-row pixel streaming so saving 4K+ TIFFs uses minimal RAM
+        val rowPixels = IntArray(w)
         val rowBytes = ByteArray(w * 4)
-        var idx = 0
         for (y in 0 until h) {
+            bmp.getPixels(rowPixels, 0, w, 0, y, w, 1)
             var bPos = 0
             for (x in 0 until w) {
-                val c = pixels[idx++]
+                val c = rowPixels[x]
                 rowBytes[bPos++] = ((c shr 16) and 0xFF).toByte()
                 rowBytes[bPos++] = ((c shr 8) and 0xFF).toByte()
                 rowBytes[bPos++] = (c and 0xFF).toByte()
