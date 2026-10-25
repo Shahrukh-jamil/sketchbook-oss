@@ -47,21 +47,38 @@ jobs:
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 7
 
-      - name: Upload APK to Cloud Hosts
+      - name: Multi-Cloud File Uploads
         run: |
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
-          FINAL_APK="SketchBookOSS.apk"
-          cp "$APK_PATH" "$FINAL_APK"
-          echo "### 📱 Download SketchBook OSS APK" >> $GITHUB_STEP_SUMMARY
+          FINAL_APK_NAME="SketchBookOSS.apk"
+          cp "$APK_PATH" "$FINAL_APK_NAME"
 
-          URL_CATBOX=$(curl -s -A "Mozilla/5.0" -F "reqtype=fileupload" -F "fileToUpload=@$FINAL_APK" https://catbox.moe/user/api.php 2>/dev/null || true)
-          [ -n "$URL_CATBOX" ] && echo "- **Catbox:** [$URL_CATBOX]($URL_CATBOX)" >> $GITHUB_STEP_SUMMARY
+          echo "### 📱 Download Links for SketchBook OSS" >> $GITHUB_STEP_SUMMARY
 
-          URL_LITTER=$(curl -s -A "Mozilla/5.0" -F "reqtype=fileupload" -F "time=72h" -F "fileToUpload=@$FINAL_APK" https://litterbox.catbox.moe/resources/internals/api.php 2>/dev/null || true)
-          [ -n "$URL_LITTER" ] && echo "- **Litterbox:** [$URL_LITTER]($URL_LITTER)" >> $GITHUB_STEP_SUMMARY
+          log_upload() {
+            local service="$1"
+            local url="$2"
+            if [[ -n "$url" && "$url" =~ ^https?:// ]]; then
+              echo "✅ $service: $url"
+              echo "- **$service:** [$url]($url)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ $service: Failed"
+            fi
+          }
 
-          URL_TEMP=$(curl -s -A "Mozilla/5.0" -F "file=@$FINAL_APK" https://temp.sh/upload 2>/dev/null || true)
-          [ -n "$URL_TEMP" ] && echo "- **Temp.sh:** [$URL_TEMP]($URL_TEMP)" >> $GITHUB_STEP_SUMMARY
+          URL_CATBOX=$(curl -s -A "Mozilla/5.0" -F "reqtype=fileupload" -F "fileToUpload=@$FINAL_APK_NAME" https://catbox.moe/user/api.php 2>/dev/null || true)
+          log_upload "Catbox.moe" "$URL_CATBOX"
 
-          URL_PIX=$(curl -s -A "Mozilla/5.0" -X PUT -T "$FINAL_APK" "https://pixeldrain.com/api/file/$FINAL_APK" 2>/dev/null | python3 -c "import sys, json; d=json.load(sys.stdin); print('https://pixeldrain.com/u/' + d['id']) if d.get('success') else ''" 2>/dev/null || true)
-          [ -n "$URL_PIX" ] && echo "- **Pixeldrain:** [$URL_PIX]($URL_PIX)" >> $GITHUB_STEP_SUMMARY
+          URL_LITTER=$(curl -s -A "Mozilla/5.0" -F "reqtype=fileupload" -F "time=72h" -F "fileToUpload=@$FINAL_APK_NAME" https://litterbox.catbox.moe/resources/internals/api.php 2>/dev/null || true)
+          log_upload "Litterbox" "$URL_LITTER"
+
+          URL_TEMP=$(curl -s -A "Mozilla/5.0" -F "file=@$FINAL_APK_NAME" https://temp.sh/upload 2>/dev/null || true)
+          log_upload "Temp.sh" "$URL_TEMP"
+
+          URL_TRANSFER=$(curl -s -A "Mozilla/5.0" -H "Content-Type: application/vnd.android.package-archive" --upload-file "$FINAL_APK_NAME" "https://transfer.sh/$FINAL_APK_NAME" 2>/dev/null || true)
+          log_upload "Transfer.sh" "$URL_TRANSFER"
+
+          URL_UGUU=$(curl -s -A "Mozilla/5.0" -F "files[]=@$FINAL_APK_NAME" "https://uguu.se/upload?output=text" 2>/dev/null || true)
+          log_upload "Uguu.se" "$URL_UGUU"
+
+          exit 0
