@@ -195,7 +195,7 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
 
         // Brush Icon on left of Info Bar
         val iconRect = RectF(left + 28f * sx, infoTop + 16f * sy, left + 124f * sx, infoBot - 14f * sy)
-        drawRealisticBrushIcon(canvas, iconRect, activeBrush.iconStyle, sx)
+        if (!drawBespokeModBrushIcon(canvas, iconRect, activeBrush, sx)) drawRealisticBrushIcon(canvas, iconRect, activeBrush.iconStyle, sx)
 
         // Brush Name + Set Name subtitle
         textPaint.color = Color.rgb(90, 90, 90)
@@ -382,6 +382,9 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
             prevY = curY
         }
 
+        if (brush.modMode == "vm_anim" || !brush.modParams["code"].isNullOrBlank()) {
+            hostView.postInvalidateOnAnimation()
+        }
         canvas.restore()
     }
 
@@ -466,7 +469,7 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
                             cellRect.right - 16f * sx,
                             cellRect.bottom - 14f * sy
                         )
-                        drawRealisticBrushIcon(canvas, iconBox, brush.iconStyle, sx)
+                        if (!drawBespokeModBrushIcon(canvas, iconBox, brush, sx)) drawRealisticBrushIcon(canvas, iconBox, brush.iconStyle, sx)
 
                         val hitRect = RectF(cellRect.left, max(top, cellRect.top), cellRect.right, min(bottom, cellRect.bottom))
                         if (hitRect.height() > 15f * sy) {
@@ -1972,6 +1975,147 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
     /**
      * Draws realistic multi-layered SketchBook brush & texture thumbnails matching 115925.jpg & 115929.jpg.
      */
+    
+    private fun drawBespokeModBrushIcon(c: Canvas, box: RectF, brush: SketchBrushItem, sx: Float): Boolean {
+        val iconKind = brush.modParams["icon"] ?: ""
+        if (iconKind.isEmpty() && brush.modMode != "vm_anim" && brush.modMode != "vm") return false
+
+        val cx = box.centerX()
+        val cy = box.centerY()
+        val w = box.width()
+        val h = box.height()
+        val r = min(w, h) * 0.42f
+
+        // Dark studio badge backing so glowing/mechanical icons pop with crisp contrast
+        fillPaint.shader = null
+        fillPaint.color = Color.rgb(26, 29, 38)
+        c.drawRoundRect(box, 10f * sx, 10f * sx, fillPaint)
+
+        val kind = if (iconKind.isNotEmpty()) iconKind else brush.id
+        when {
+            kind.contains("serpent") || kind.contains("dragon") -> {
+                // Coiled S-curve articulated serpent spine with glowing scales
+                strokePaint.color = Color.rgb(0, 230, 118)
+                strokePaint.strokeWidth = 3.2f * sx
+                for (k in -3..3) {
+                    val t = k / 3.5f
+                    val px = cx + sin(t * 2.6f) * r * 0.65f
+                    val py = cy + t * r * 0.82f
+                    val scR = r * (0.28f - abs(t) * 0.12f)
+                    fillPaint.color = if (k % 2 == 0) Color.rgb(0, 200, 83) else Color.rgb(0, 230, 195)
+                    c.drawCircle(px, py, scR, fillPaint)
+                    c.drawLine(px - scR * 1.4f, py, px + scR * 1.4f, py, strokePaint)
+                }
+            }
+            kind.contains("clock") || kind.contains("gear") -> {
+                // Two interlocking mechanical cogwheels (gold & cyan)
+                val g1x = cx - r * 0.32f; val g1y = cy - r * 0.28f; val gr1 = r * 0.48f
+                val g2x = cx + r * 0.34f; val g2y = cy + r * 0.32f; val gr2 = r * 0.42f
+                strokePaint.strokeWidth = 3.5f * sx
+                strokePaint.color = Color.rgb(255, 193, 7)
+                c.drawCircle(g1x, g1y, gr1 * 0.72f, strokePaint)
+                for (t in 0 until 8) {
+                    val a = t * Math.PI / 4.0
+                    c.drawLine(g1x + cos(a).toFloat() * gr1 * 0.55f, g1y + sin(a).toFloat() * gr1 * 0.55f, g1x + cos(a).toFloat() * gr1, g1y + sin(a).toFloat() * gr1, strokePaint)
+                }
+                strokePaint.color = Color.rgb(0, 229, 255)
+                c.drawCircle(g2x, g2y, gr2 * 0.72f, strokePaint)
+                for (t in 0 until 6) {
+                    val a = t * Math.PI / 3.0 + 0.3
+                    c.drawLine(g2x + cos(a).toFloat() * gr2 * 0.55f, g2y + sin(a).toFloat() * gr2 * 0.55f, g2x + cos(a).toFloat() * gr2, g2y + sin(a).toFloat() * gr2, strokePaint)
+                }
+            }
+            kind.contains("tesla") || kind.contains("lightning") -> {
+                // High-voltage jagged lightning bolt between two electrodes
+                val p = Path().apply {
+                    moveTo(cx + r * 0.35f, cy - r * 0.85f)
+                    lineTo(cx - r * 0.28f, cy - r * 0.10f)
+                    lineTo(cx + r * 0.22f, cy + r * 0.05f)
+                    lineTo(cx - r * 0.38f, cy + r * 0.85f)
+                }
+                strokePaint.color = Color.rgb(130, 177, 255)
+                strokePaint.strokeWidth = 6.5f * sx
+                c.drawPath(p, strokePaint)
+                strokePaint.color = Color.WHITE
+                strokePaint.strokeWidth = 2.8f * sx
+                c.drawPath(p, strokePaint)
+            }
+            kind.contains("dna") || kind.contains("helix") -> {
+                // Double Helix intertwined strands with base-pair rungs
+                for (k in -4..4) {
+                    val t = k / 4.2f
+                    val py = cy + t * r * 0.85f
+                    val ox = sin(t * 2.8f) * r * 0.58f
+                    strokePaint.color = Color.argb(180, 200, 200, 255)
+                    strokePaint.strokeWidth = 2.2f * sx
+                    c.drawLine(cx - ox, py, cx + ox, py, strokePaint)
+                    fillPaint.color = Color.rgb(255, 64, 129)
+                    c.drawCircle(cx - ox, py, r * 0.14f, fillPaint)
+                    fillPaint.color = Color.rgb(0, 229, 255)
+                    c.drawCircle(cx + ox, py, r * 0.14f, fillPaint)
+                }
+            }
+            kind.contains("portal") || kind.contains("mandala") -> {
+                // Nested counter-rotated star polygons & vortex ring
+                strokePaint.color = Color.rgb(180, 105, 255)
+                strokePaint.strokeWidth = 2.6f * sx
+                c.drawCircle(cx, cy, r * 0.88f, strokePaint)
+                strokePaint.color = Color.rgb(0, 229, 255)
+                c.drawRect(cx - r * 0.52f, cy - r * 0.52f, cx + r * 0.52f, cy + r * 0.52f, strokePaint)
+                c.save()
+                c.rotate(45f, cx, cy)
+                strokePaint.color = Color.rgb(255, 215, 64)
+                c.drawRect(cx - r * 0.52f, cy - r * 0.52f, cx + r * 0.52f, cy + r * 0.52f, strokePaint)
+                c.restore()
+                fillPaint.color = Color.WHITE
+                c.drawCircle(cx, cy, r * 0.16f, fillPaint)
+            }
+            kind.contains("synth") || kind.contains("eq") || kind.contains("pulse") -> {
+                // Vertical Equalizer / Oscilloscope Bars with Peak LEDs
+                val heights = floatArrayOf(0.35f, 0.78f, 0.95f, 0.52f, 0.86f)
+                val cols = intArrayOf(Color.rgb(0, 230, 118), Color.rgb(0, 229, 255), Color.rgb(255, 64, 129), Color.rgb(255, 193, 7), Color.rgb(124, 77, 255))
+                val barW = (r * 1.6f) / 5f
+                val startX = cx - r * 0.8f
+                for (b in 0..4) {
+                    val bx = startX + b * barW + barW * 0.15f
+                    val bh = r * 1.5f * heights[b]
+                    fillPaint.color = cols[b]
+                    c.drawRect(bx, cy + r * 0.75f - bh, bx + barW * 0.7f, cy + r * 0.75f, fillPaint)
+                    fillPaint.color = Color.WHITE
+                    c.drawRect(bx, cy + r * 0.75f - bh - 6f * sx, bx + barW * 0.7f, cy + r * 0.75f - bh - 2f * sx, fillPaint)
+                }
+            }
+            kind.contains("atom") || kind.contains("orbit") -> {
+                // Rutherford 3-axis elliptical atomic orbitals + central nucleus
+                strokePaint.color = Color.rgb(0, 229, 255)
+                strokePaint.strokeWidth = 2.4f * sx
+                val oval = RectF(cx - r * 0.88f, cy - r * 0.34f, cx + r * 0.88f, cy + r * 0.34f)
+                for (a in intArrayOf(0, 60, 120)) {
+                    c.save()
+                    c.rotate(a.toFloat(), cx, cy)
+                    c.drawOval(oval, strokePaint)
+                    fillPaint.color = Color.WHITE
+                    c.drawCircle(cx + r * 0.72f, cy, r * 0.11f, fillPaint)
+                    c.restore()
+                }
+                fillPaint.color = Color.rgb(255, 82, 82)
+                c.drawCircle(cx, cy, r * 0.22f, fillPaint)
+            }
+            else -> {
+                // Molten Lava Fissure & Rising Fire Embers
+                fillPaint.color = Color.rgb(255, 87, 34)
+                c.drawCircle(cx, cy + r * 0.35f, r * 0.48f, fillPaint)
+                fillPaint.color = Color.rgb(255, 235, 59)
+                c.drawCircle(cx, cy + r * 0.35f, r * 0.26f, fillPaint)
+                c.drawCircle(cx - r * 0.32f, cy - r * 0.22f, r * 0.15f, fillPaint)
+                fillPaint.color = Color.rgb(255, 152, 0)
+                c.drawCircle(cx + r * 0.28f, cy - r * 0.48f, r * 0.18f, fillPaint)
+                c.drawCircle(cx - r * 0.08f, cy - r * 0.68f, r * 0.11f, fillPaint)
+            }
+        }
+        return true
+    }
+
     fun drawRealisticBrushIcon(c: Canvas, box: RectF, style: BrushIconStyle, sx: Float) {
         val cx = box.centerX()
         val cy = box.centerY()

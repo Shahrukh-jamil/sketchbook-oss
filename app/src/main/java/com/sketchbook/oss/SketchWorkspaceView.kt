@@ -177,11 +177,60 @@ class SketchWorkspaceView(
     private val procHistoryPts = mutableListOf<PointF>()
     private var activeTemporalStroke: TemporalAnimatedStroke? = null
 
+    private val vmTempFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val vmTempStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+
     private fun renderTemporalAnimatedStrokes(canvas: Canvas, timeSec: Float) {
         if (project.temporalStrokes.isEmpty()) return
+        val bmp = project.ensureCanvasBitmap()
         for (ts in project.temporalStrokes) {
             val baseHsl = ColorStudioState.colorToHsl(ts.color)
             val nCount = ts.nodes.size
+            if (ts.vmCode.isNotEmpty()) {
+                val histPts = ArrayList<PointF>(nCount)
+                val histRads = ArrayList<Float>(nCount)
+                UnifiedBrushRenderer.shaderVM.resetMemory()
+                for (i in 0 until nCount) {
+                    val nd = ts.nodes[i]
+                    histPts.add(PointF(nd.x, nd.y))
+                    histRads.add(nd.radius)
+                    UnifiedBrushRenderer.shaderVM.executeDabProgram(
+                        code = ts.vmCode,
+                        canvas = canvas,
+                        x = nd.x,
+                        y = nd.y,
+                        nx = nd.nx,
+                        ny = nd.ny,
+                        tx = nd.tx,
+                        ty = nd.ty,
+                        tangentDeg = nd.tangentDeg,
+                        radius = nd.radius,
+                        pressure = nd.pressure,
+                        speed = 1f,
+                        dabIndex = nd.dabIndex,
+                        timeSec = timeSec,
+                        baseHue = baseHsl[0],
+                        baseSat = baseHsl[1],
+                        baseLit = baseHsl[2],
+                        baseAlpha = (nd.alpha / 255f).coerceIn(0.02f, 1f),
+                        isErase = ts.isErase,
+                        deterministicRandom = true,
+                        historyPts = histPts,
+                        historyRadii = histRads,
+                        canvasBitmap = bmp,
+                        activeAgentsOut = null,
+                        fillPaint = vmTempFillPaint,
+                        strokePaint = vmTempStrokePaint,
+                        dstOutXfer = clearXfermode
+                    )
+                }
+                continue
+            }
+
             for (i in 0 until nCount) {
                 val nd = ts.nodes[i]
                 val wave = sin(timeSec * ts.speed + nd.phase) * ts.waveAmp
@@ -192,11 +241,8 @@ class SketchWorkspaceView(
 
                 val shiftedHue = (baseHsl[0] + sin(timeSec * 2f + nd.phase) * ts.hueShift + 360f) % 360f
                 val glowCol = ColorStudioState.hslToColor(shiftedHue, baseHsl[1].coerceAtLeast(0.75f), baseHsl[2].coerceIn(0.35f, 0.7f))
-                val gr = Color.red(glowCol)
-                val gg = Color.green(glowCol)
-                val gb = Color.blue(glowCol)
+                val gr = Color.red(glowCol); val gg = Color.green(glowCol); val gb = Color.blue(glowCol)
 
-                // Outer breathing plasma halo
                 strokePaint.shader = RadialGradient(
                     animX, animY, curRad * 2.2f,
                     intArrayOf(
@@ -210,21 +256,8 @@ class SketchWorkspaceView(
                 canvas.drawCircle(animX, animY, curRad * 2.2f, strokePaint)
                 strokePaint.shader = null
 
-                // Crisp hot core
                 strokePaint.color = Color.argb(nd.alpha, 255, 255, 255)
                 canvas.drawCircle(animX, animY, curRad * 0.42f, strokePaint)
-
-                // Orbiting firefly sparks on every 4th node
-                if (i % 4 == 0 && ts.sparkCount > 0) {
-                    for (sp in 0 until ts.sparkCount) {
-                        val ang = timeSec * (ts.speed * 1.4f + sp) + nd.phase + sp * 2.1f
-                        val orbitR = curRad * (1.25f + 0.55f * sin(timeSec * 2.5f + sp))
-                        val sx = animX + cos(ang) * orbitR
-                        val sy = animY + sin(ang) * orbitR
-                        strokePaint.color = Color.argb((nd.alpha * 0.85f).toInt().coerceIn(20, 240), 255, 255, 220)
-                        canvas.drawCircle(sx, sy, (curRad * 0.22f).coerceAtLeast(1.8f), strokePaint)
-                    }
-                }
             }
         }
     }
@@ -1686,12 +1719,13 @@ class SketchWorkspaceView(
         procHistoryPts.clear()
         strokeCarryDist = 0f
         val activeBrush = brushAndColorModal.selectedBrush()
-        if (activeBrush.modMode == "time_animated" && !brushAndColorModal.colorState.isColorlessEraser) {
+        if ((activeBrush.modMode == "time_animated" || activeBrush.modMode == "vm_anim") && !brushAndColorModal.colorState.isColorlessEraser) {
             val spd = activeBrush.modParams["speed"]?.toFloatOrNull() ?: 3.8f
             val wv = activeBrush.modParams["wave"]?.toFloatOrNull() ?: 14f
             val spk = (activeBrush.modParams["sparks"]?.toIntOrNull() ?: 3).coerceIn(0, 6)
             val hShift = activeBrush.modParams["hue_shift"]?.toFloatOrNull() ?: 45f
-            val ts = TemporalAnimatedStroke(brushAndColorModal.colorState.currentColor, spd, wv, spk, hShift)
+            val vmCode = if (activeBrush.modMode == "vm_anim") (activeBrush.modParams["code"] ?: "") else ""
+            val ts = TemporalAnimatedStroke(brushAndColorModal.colorState.currentColor, spd, wv, spk, hShift, vmCode = vmCode)
             project.temporalStrokes.add(ts)
             activeTemporalStroke = ts
         } else {
@@ -1751,11 +1785,11 @@ class SketchWorkspaceView(
         val smudgeHolder = intArrayOf(smudgeCarryColor)
 
         if (segDist < 0.001f && strokeCarryDist == 0f) {
-            if (brush.modMode == "time_animated" && !colState.isColorlessEraser) {
+            if ((brush.modMode == "time_animated" || brush.modMode == "vm_anim") && !colState.isColorlessEraser) {
                 val ts = activeTemporalStroke
                 if (ts != null && mid1X in 0f..bmp.width.toFloat() && mid1Y in 0f..bmp.height.toFloat()) {
                     val dabAlpha = ((brush.opacity / 100f) * 255f).roundToInt().coerceIn(8, 255)
-                    ts.nodes.add(TemporalDabNode(mid1X, mid1Y, 0f, 1f, curRadius, dabAlpha, 0f))
+                    ts.nodes.add(TemporalDabNode(mid1X, mid1Y, 0f, 1f, curRadius, dabAlpha, 0f, 1f, 0f, tangentDeg, pNorm, 0))
                 }
             } else {
                 UnifiedBrushRenderer.livePhysicsAgents = liveAgents
@@ -1789,7 +1823,7 @@ class SketchWorkspaceView(
                 val x = invT * invT * mid1X + 2f * invT * t * p1.x + t * t * mid2X
                 val y = invT * invT * mid1Y + 2f * invT * t * p1.y + t * t * mid2Y
 
-                if (brush.modMode == "time_animated" && !colState.isColorlessEraser) {
+                if ((brush.modMode == "time_animated" || brush.modMode == "vm_anim") && !colState.isColorlessEraser) {
                     val ts = activeTemporalStroke
                     if (ts != null && x in 0f..bmp.width.toFloat() && y in 0f..bmp.height.toFloat()) {
                         val dx = mid2X - mid1X
@@ -1804,7 +1838,12 @@ class SketchWorkspaceView(
                                 ny = dx / len,
                                 radius = curRadius,
                                 alpha = dabAlpha,
-                                phase = ts.nodes.size * 0.35f
+                                phase = ts.nodes.size * 0.35f,
+                                tx = dx / len,
+                                ty = dy / len,
+                                tangentDeg = tangentDeg,
+                                pressure = pNorm,
+                                dabIndex = ts.nodes.size
                             )
                         )
                     }

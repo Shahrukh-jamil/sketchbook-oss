@@ -87,7 +87,12 @@ data class TemporalDabNode(
     val ny: Float,
     val radius: Float,
     val alpha: Int,
-    val phase: Float
+    val phase: Float,
+    val tx: Float = 1f,
+    val ty: Float = 0f,
+    val tangentDeg: Float = 0f,
+    val pressure: Float = 1f,
+    val dabIndex: Int = 0
 )
 
 data class TemporalAnimatedStroke(
@@ -96,6 +101,8 @@ data class TemporalAnimatedStroke(
     val waveAmp: Float,
     val sparkCount: Int,
     val hueShift: Float,
+    val vmCode: String = "",
+    val isErase: Boolean = false,
     val nodes: MutableList<TemporalDabNode> = mutableListOf()
 ) {
     fun deepCopy(): TemporalAnimatedStroke {

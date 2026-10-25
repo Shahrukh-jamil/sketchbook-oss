@@ -77,9 +77,6 @@ class BrushShaderVM {
         }
     }
 
-    // --------------------------------------------------------------------------
-    // 2D CONTINUOUS PERLIN / VALUE GRADIENT NOISE (-1.0 .. +1.0)
-    // --------------------------------------------------------------------------
     private fun hash2D(ix: Int, iy: Int): Float {
         var n = ix * 374761393 + iy * 668265263
         n = (n xor (n shr 13)) * 1274126177
@@ -102,9 +99,6 @@ class BrushShaderVM {
         return ab + (cd - ab) * uy
     }
 
-    // --------------------------------------------------------------------------
-    // VM EXECUTION CONTEXT PER DAB
-    // --------------------------------------------------------------------------
     fun executeDabProgram(
         code: String,
         canvas: Canvas,
@@ -126,8 +120,8 @@ class BrushShaderVM {
         baseAlpha: Float,
         isErase: Boolean,
         deterministicRandom: Boolean,
-        historyPts: List<PointF>,
-        historyRadii: List<Float>,
+        historyPts: MutableList<PointF>,
+        historyRadii: MutableList<Float>,
         canvasBitmap: Bitmap?,
         activeAgentsOut: MutableList<LivePhysicsAgent>?,
         fillPaint: Paint,
@@ -137,9 +131,12 @@ class BrushShaderVM {
         val program = getCompiled(code)
         if (program.isEmpty()) return
 
+        var curX = x
+        var curY = y
+
         val vars = HashMap<String, Float>(24)
-        vars["x"] = x
-        vars["y"] = y
+        vars["x"] = curX
+        vars["y"] = curY
         vars["r"] = radius
         vars["p"] = pressure
         vars["v"] = speed
@@ -171,8 +168,8 @@ class BrushShaderVM {
 
         fun sampleCanvasHslA(dx: Float, dy: Float): FloatArray {
             if (canvasBitmap == null) return floatArrayOf(baseHue, baseSat, baseLit, 1f)
-            val sx = (x + dx).toInt().coerceIn(0, canvasBitmap.width - 1)
-            val sy = (y + dy).toInt().coerceIn(0, canvasBitmap.height - 1)
+            val sx = (curX + dx).toInt().coerceIn(0, canvasBitmap.width - 1)
+            val sy = (curY + dy).toInt().coerceIn(0, canvasBitmap.height - 1)
             val col = canvasBitmap.getPixel(sx, sy)
             val a = Color.alpha(col) / 255f
             if (a < 0.05f) return floatArrayOf(baseHue, baseSat, baseLit, 0f)
@@ -232,12 +229,12 @@ class BrushShaderVM {
                         "hx" -> {
                             val lag = a0.toInt().coerceAtLeast(1)
                             val idx = (historyPts.size - 1 - lag).coerceIn(0, max(0, historyPts.lastIndex))
-                            if (historyPts.isNotEmpty()) historyPts[idx].x else x
+                            if (historyPts.isNotEmpty()) historyPts[idx].x else curX
                         }
                         "hy" -> {
                             val lag = a0.toInt().coerceAtLeast(1)
                             val idx = (historyPts.size - 1 - lag).coerceIn(0, max(0, historyPts.lastIndex))
-                            if (historyPts.isNotEmpty()) historyPts[idx].y else y
+                            if (historyPts.isNotEmpty()) historyPts[idx].y else curY
                         }
                         "pickH" -> sampleCanvasHslA(a0, a1)[0]
                         "pickS" -> sampleCanvasHslA(a0, a1)[1]
@@ -255,7 +252,7 @@ class BrushShaderVM {
             return ColorStudioState.hslToColor(normH, s.coerceIn(0f, 1f), l.coerceIn(0f, 1f))
         }
 
-        var opsBudget = 600
+        var opsBudget = 900
         fun execStmts(stmts: List<Stmt>) {
             for (st in stmts) {
                 if (opsBudget-- <= 0) return
@@ -292,10 +289,20 @@ class BrushShaderVM {
                         val xfer = if (isErase) dstOutXfer else null
 
                         when (st.name) {
+                            "set_pos" -> {
+                                // set_pos(dx, dy) - dynamically shifts current node position in history & canvas!
+                                curX = x + arg(0)
+                                curY = y + arg(1)
+                                vars["x"] = curX
+                                vars["y"] = curY
+                                if (historyPts.isNotEmpty()) {
+                                    historyPts[historyPts.lastIndex].set(curX, curY)
+                                }
+                            }
+
                             "circle" -> {
-                                // circle(dx, dy, rad, h, s, l, alpha, feather)
-                                val cx = x + arg(0)
-                                val cy = y + arg(1)
+                                val cx = curX + arg(0)
+                                val cy = curY + arg(1)
                                 val cr = max(0.8f, arg(2, radius))
                                 val col = resolveColor(arg(3, baseHue), arg(4, baseSat), arg(5, baseLit))
                                 val al = (arg(6, baseAlpha).coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(1, 255)
@@ -320,9 +327,8 @@ class BrushShaderVM {
                             }
 
                             "oval" -> {
-                                // oval(dx, dy, rx, ry, rotDeg, h, s, l, alpha, feather)
-                                val cx = x + arg(0)
-                                val cy = y + arg(1)
+                                val cx = curX + arg(0)
+                                val cy = curY + arg(1)
                                 val rx = max(0.8f, arg(2, radius))
                                 val ry = max(0.8f, arg(3, radius * 0.5f))
                                 val rot = arg(4, tangentDeg)
@@ -354,11 +360,10 @@ class BrushShaderVM {
                             }
 
                             "line" -> {
-                                // line(dx1, dy1, dx2, dy2, width, h, s, l, alpha)
-                                val x1 = x + arg(0)
-                                val y1 = y + arg(1)
-                                val x2 = x + arg(2)
-                                val y2 = y + arg(3)
+                                val x1 = curX + arg(0)
+                                val y1 = curY + arg(1)
+                                val x2 = curX + arg(2)
+                                val y2 = curY + arg(3)
                                 val w = max(0.8f, arg(4, 2f))
                                 val col = resolveColor(arg(5, baseHue), arg(6, baseSat), arg(7, baseLit))
                                 val al = (arg(8, baseAlpha).coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(1, 255)
@@ -370,11 +375,32 @@ class BrushShaderVM {
                                 strokePaint.xfermode = null
                             }
 
-                            "ribbon" -> {
-                                // ribbon(lag, widthScale, normalOffsetScale, h, s, l, alpha)
+                            "hline" -> {
+                                // hline(lag, ox1, oy1, ox2, oy2, width, h, s, l, alpha)
                                 val lag = arg(0, 1f).toInt().coerceAtLeast(1)
-                                if (historyPts.size >= lag) {
-                                    val pIdx = (historyPts.size - lag).coerceIn(0, historyPts.lastIndex)
+                                if (historyPts.size > lag) {
+                                    val pIdx = (historyPts.size - 1 - lag).coerceIn(0, historyPts.lastIndex)
+                                    val prevPt = historyPts[pIdx]
+                                    val x1 = prevPt.x + arg(1)
+                                    val y1 = prevPt.y + arg(2)
+                                    val x2 = curX + arg(3)
+                                    val y2 = curY + arg(4)
+                                    val w = max(0.8f, arg(5, 2f))
+                                    val col = resolveColor(arg(6, baseHue), arg(7, baseSat), arg(8, baseLit))
+                                    val al = (arg(9, baseAlpha).coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(1, 255)
+                                    strokePaint.xfermode = xfer
+                                    strokePaint.shader = null
+                                    strokePaint.strokeWidth = w
+                                    strokePaint.color = Color.argb(al, Color.red(col), Color.green(col), Color.blue(col))
+                                    canvas.drawLine(x1, y1, x2, y2, strokePaint)
+                                    strokePaint.xfermode = null
+                                }
+                            }
+
+                            "ribbon" -> {
+                                val lag = arg(0, 1f).toInt().coerceAtLeast(1)
+                                if (historyPts.size > lag) {
+                                    val pIdx = (historyPts.size - 1 - lag).coerceIn(0, historyPts.lastIndex)
                                     val prevPt = historyPts[pIdx]
                                     val prevR = if (pIdx < historyRadii.size) historyRadii[pIdx] else radius
                                     val wScale = arg(1, 1f)
@@ -393,8 +419,8 @@ class BrushShaderVM {
                                     val path = Path().apply {
                                         moveTo(prevPt.x + prvOffX - nx * hwPrv, prevPt.y + prvOffY - ny * hwPrv)
                                         lineTo(prevPt.x + prvOffX + nx * hwPrv, prevPt.y + prvOffY + ny * hwPrv)
-                                        lineTo(x + curOffX + nx * hwCur, y + curOffY + ny * hwCur)
-                                        lineTo(x + curOffX - nx * hwCur, y + curOffY - ny * hwCur)
+                                        lineTo(curX + curOffX + nx * hwCur, curY + curOffY + ny * hwCur)
+                                        lineTo(curX + curOffX - nx * hwCur, curY + curOffY - ny * hwCur)
                                         close()
                                     }
                                     fillPaint.xfermode = xfer
@@ -406,10 +432,9 @@ class BrushShaderVM {
                             }
 
                             "poly" -> {
-                                // poly(sides, dx, dy, rad, rotDeg, h, s, l, alpha, fillMode)
                                 val sides = arg(0, 5f).toInt().coerceIn(3, 24)
-                                val cx = x + arg(1)
-                                val cy = y + arg(2)
+                                val cx = curX + arg(1)
+                                val cy = curY + arg(2)
                                 val pr = max(1f, arg(3, radius))
                                 val rotRad = Math.toRadians(arg(4, tangentDeg).toDouble())
                                 val col = resolveColor(arg(5, baseHue), arg(6, baseSat), arg(7, baseLit))
@@ -440,9 +465,8 @@ class BrushShaderVM {
                             }
 
                             "arc" -> {
-                                // arc(dx, dy, rad, startDeg, sweepDeg, width, h, s, l, alpha)
-                                val cx = x + arg(0)
-                                val cy = y + arg(1)
+                                val cx = curX + arg(0)
+                                val cy = curY + arg(1)
                                 val ar = max(1f, arg(2, radius))
                                 val sDeg = arg(3, 0f)
                                 val swDeg = arg(4, 180f)
@@ -457,13 +481,12 @@ class BrushShaderVM {
                             }
 
                             "drip" -> {
-                                // drip(dx, dy, vx, vy, rad, lifeSec, gravity, curlStrength, h, s, l, alpha)
                                 if (activeAgentsOut != null && activeAgentsOut.size < 280) {
                                     val life = arg(5, 1.5f).coerceIn(0.1f, 8.0f)
                                     activeAgentsOut.add(
                                         LivePhysicsAgent(
-                                            x = x + arg(0),
-                                            y = y + arg(1),
+                                            x = curX + arg(0),
+                                            y = curY + arg(1),
                                             vx = arg(2),
                                             vy = arg(3),
                                             radius = max(1f, arg(4, radius * 0.25f)),
@@ -489,9 +512,6 @@ class BrushShaderVM {
         execStmts(program)
     }
 
-    // ==========================================================================
-    // COMPACT RECURSIVE-DESCENT TOKENIZER & PARSER FOR BRUSH SHADER VM
-    // ==========================================================================
     private fun tokenize(src: String): List<String> {
         val tokens = ArrayList<String>()
         var i = 0
@@ -558,7 +578,7 @@ class BrushShaderVM {
             }
             if (tok == "mem" && peek(1) == "[") {
                 consume()
-                consume() // '['
+                consume()
                 val idxE = parseExpr()
                 match("]")
                 match("=")
@@ -598,12 +618,12 @@ class BrushShaderVM {
             }
             if (peek(1) == "=") {
                 val name = consume()
-                consume() // '='
+                consume()
                 return Stmt.AssignVar(name, parseExpr())
             }
             if (peek(1) == "(") {
                 val cmdName = consume()
-                consume() // '('
+                consume()
                 val args = ArrayList<Expr>()
                 if (peek() != ")") {
                     while (true) {
