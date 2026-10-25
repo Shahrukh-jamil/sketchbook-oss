@@ -135,28 +135,26 @@ class ModCoreEngine(private val context: Context, private val onStateChanged: ()
         }
     }
 
-    private fun rebuildUnifiedDslFromBundles(): String {
+        private fun rebuildUnifiedDslFromBundles(): String {
         val sb = StringBuilder()
-        sb.append("# SketchBook OSS - Unified Multi-Bundle Core Mod Script
-
-")
+        sb.append("# SketchBook OSS - Unified Multi-Bundle Core Mod Script\n\n")
         for (b in bundles) {
-            sb.append("@bundle id="${b.id}" title="${b.title}" default=${b.enabled} desc="${b.description}"
-")
+            sb.append("@bundle id=\"").append(b.id)
+                .append("\" title=\"").append(b.title)
+                .append("\" default=").append(b.enabled)
+                .append(" desc=\"").append(b.description).append("\"\n")
             for (fn in b.functions) {
-                sb.append("fn ${fn.type}")
+                sb.append("fn ").append(fn.type)
                 for ((k, v) in fn.params) {
                     if (v.contains(" ") || v.startsWith("#")) {
-                        sb.append(" $k="$v"")
+                        sb.append(" ").append(k).append("=\"").append(v).append("\"")
                     } else {
-                        sb.append(" $k=$v")
+                        sb.append(" ").append(k).append("=").append(v)
                     }
                 }
-                sb.append("
-")
+                sb.append("\n")
             }
-            sb.append("
-")
+            sb.append("\n")
         }
         return sb.toString().trim()
     }

@@ -1092,6 +1092,45 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
         }
     }
 
+    
+    private fun drawMultiStopColorSlider(
+        canvas: Canvas,
+        left: Float,
+        right: Float,
+        yCenter: Float,
+        sx: Float,
+        sy: Float,
+        id: String,
+        label: String,
+        valStr: String,
+        fraction: Float,
+        stops: IntArray
+    ) {
+        val f = fraction.coerceIn(0f, 1f)
+        subTextPaint.color = Color.rgb(155, 155, 155)
+        subTextPaint.textSize = 33f * sx
+        subTextPaint.textAlign = Paint.Align.CENTER
+        canvas.drawText(label, left + 90f * sx, yCenter + 12f * sy, subTextPaint)
+
+        val trackLeft = left + 148f * sx
+        val trackRight = right - 148f * sx
+        val trackH = 26f * sy
+        val trackRect = RectF(trackLeft, yCenter - trackH * 0.5f, trackRight, yCenter + trackH * 0.5f)
+
+        fillPaint.shader = LinearGradient(trackLeft, yCenter, trackRight, yCenter, stops, null, Shader.TileMode.CLAMP)
+        canvas.drawRoundRect(trackRect, trackH * 0.5f, trackH * 0.5f, fillPaint)
+        fillPaint.shader = null
+
+        val knobX = trackLeft + (trackRight - trackLeft) * f
+        fillPaint.color = Color.WHITE
+        canvas.drawCircle(knobX, yCenter, 26f * sx, fillPaint)
+
+        subTextPaint.textAlign = Paint.Align.LEFT
+        canvas.drawText(valStr, right - 112f * sx, yCenter + 12f * sy, subTextPaint)
+
+        sliderRects[id] = RectF(trackLeft - 30f * sx, yCenter - 48f * sy, trackRight + 30f * sx, yCenter + 48f * sy)
+    }
+
     private fun drawColorChannelSlider(
         canvas: Canvas,
         left: Float,
