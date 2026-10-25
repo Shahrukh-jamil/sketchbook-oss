@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+val runNum = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
 android {
     namespace = "com.sketchbook.oss"
     compileSdk = 34
@@ -9,8 +10,8 @@ android {
         applicationId = "com.sketchbook.oss"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.1"
+        versionCode = 10 + runNum
+        versionName = "1.1.$runNum"
     }
     signingConfigs {
         create("release") {

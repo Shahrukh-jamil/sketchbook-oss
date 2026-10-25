@@ -10,7 +10,11 @@ import android.graphics.DashPathEffect
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PointF
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.Shader
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -20,11 +24,13 @@ import android.widget.ScrollView
 import android.widget.TextView
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.random.Random
 
 enum class InlineEditField {
     NONE,
@@ -58,11 +64,19 @@ class SketchWorkspaceView(
     val hwScreenSize: Pair<Int, Int> = SketchProjectState.getHardwareScreenResolution(context)
     var project = SketchProjectState(width = hwScreenSize.first, height = hwScreenSize.second)
     val customPresets = ProjectStorageManager.loadCustomPresets(context)
-    val brushConfig = CoolBrushConfig()
+    val brushAndColorModal = BrushAndColorModal(this)
 
     var popupState: TopPopupState = TopPopupState.NONE
     var newSketchTab: NewSketchTab = NewSketchTab.PLUS_CUSTOM
     var activeInlineField: InlineEditField = InlineEditField.NONE
+
+    // Async Saving Lock & Non-Closable Saving Modal State
+    @Volatile
+    var isSavingInProgress: Boolean = false
+    private var savingAnimAngle: Float = 0f
+
+    // Eyedropper Mode
+    private var isCanvasEyedropperActive: Boolean = false
 
     var customWidthInput: Int = hwScreenSize.first
     var customHeightInput: Int = hwScreenSize.second
@@ -84,7 +98,7 @@ class SketchWorkspaceView(
     private var isScrollingMods: Boolean = false
     private var longPressRunnable: Runnable? = null
 
-    // Pivot-Locked SketchBook Affine Transform Matrix (Fast, exact focal point zoom/pan/rotate)
+    // Pivot-Locked SketchBook Affine Transform Matrix
     private val userTransformMatrix = Matrix()
     private val viewMatrix = Matrix()
     private val inverseViewMatrix = Matrix()
@@ -96,24 +110,27 @@ class SketchWorkspaceView(
     private var prevMidX: Float = 0f
     private var prevMidY: Float = 0f
 
-    // 1-Finger / Stylus Drawing with 2-Finger Pinch Guard (Zero stray dots when zooming!)
+    // 1-Finger / Stylus Drawing with 2-Finger Pinch Guard
     private data class QueuedStrokeSample(val pt: PointF, val pressure: Float)
     private val pendingStrokeSamples = mutableListOf<QueuedStrokeSample>()
     private var isDrawingStroke: Boolean = false
     private var strokeCommittedToBitmap: Boolean = false
     private var gestureDownTimeMs: Long = 0L
-    private var isDraggingBrushSlider: String? = null
     private var lastCanvasPt = PointF()
     private var prevCanvasPt = PointF()
     private var smoothX = 0f
     private var smoothY = 0f
     private var lastStrokeSpeed = 0f
+    private var smudgeCarryColor: Int = Color.WHITE
 
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
+    private val clearXfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+    private val multiplyXfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
+    private val addXfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     private var statusBannerText: String? = null
@@ -132,9 +149,6 @@ class SketchWorkspaceView(
     private var presetScrollAreaBounds = RectF()
     private var modScrollAreaBounds = RectF()
     private var presetRowHeightPx = 1f
-    private var brushSizeSliderRect = RectF()
-    private var brushOpacitySliderRect = RectF()
-    private var brushSmoothSliderRect = RectF()
 
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
@@ -148,6 +162,12 @@ class SketchWorkspaceView(
     fun resetCanvasTransform() {
         userTransformMatrix.reset()
         isTransformInitialized = true
+        invalidate()
+    }
+
+    fun activateOnCanvasEyedropper() {
+        isCanvasEyedropperActive = true
+        showBanner("Tap anywhere on canvas to pick color")
         invalidate()
     }
 
@@ -192,9 +212,9 @@ class SketchWorkspaceView(
 
     fun showBanner(msg: String) {
         statusBannerText = msg
-        statusBannerExpiry = System.currentTimeMillis() + 2800L
+        statusBannerExpiry = System.currentTimeMillis() + 2600L
         invalidate()
-        postDelayed(Runnable { invalidate() }, 2900L)
+        postDelayed(Runnable { invalidate() }, 2700L)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -207,7 +227,6 @@ class SketchWorkspaceView(
 
         val sx = w / 1080f
         val topBarH = 131f * sx
-        // Zero gray viewport boundary: sideFrame = 0f (100% edge-to-edge)
         val sideFrame = 0f
         val timeSec = (System.nanoTime() - animStartNano) / 1_000_000_000f
         val pal = modEngine.resolveUiPalette()
@@ -232,15 +251,12 @@ class SketchWorkspaceView(
             isTransformInitialized = true
         }
 
-        // Base matrix maps bitmap (0..bmp.width, 0..bmp.height) to fitted screen rect
         viewMatrix.reset()
         viewMatrix.postScale(baseDrawW / bmp.width.toFloat(), baseDrawH / bmp.height.toFloat())
         viewMatrix.postTranslate(baseLeft, baseTop)
-        // Post-concat user's pivot-locked pan/zoom/rotate matrix in screen space!
         viewMatrix.postConcat(userTransformMatrix)
         viewMatrix.invert(inverseViewMatrix)
 
-        // Draw Transformed Canvas Paper + Bitmap + Mod Guides (Zero gray boundary around canvas!)
         canvas.save()
         canvas.clipRect(0f, topBarH, w, h)
         canvas.concat(viewMatrix)
@@ -258,12 +274,16 @@ class SketchWorkspaceView(
         val dotY = h - 136f * sx
         val dotRadius = 15.5f * sx
         modEngine.renderWorkspaceAnimatedEffects(canvas, w, h, topBarH, w / 2f, dotY, dotRadius, timeSec)
-        SketchIcons.drawBottomCenterDot(canvas, w / 2f, dotY, dotRadius)
+        if (popupState != TopPopupState.BRUSH_MENU && popupState != TopPopupState.COLOR_MENU) {
+            SketchIcons.drawBottomCenterDot(canvas, w / 2f, dotY, dotRadius)
+        }
 
-        // 4. Draw Top Menu Bar (Edge-to-Edge)
-        drawTopMenuBar(canvas, w, topBarH, sideFrame, pal, timeSec)
+        // 4. Draw Top Menu Bar (Hidden when full-height Brush/Color Sheet is open, matching 115925.jpg!)
+        if (popupState != TopPopupState.BRUSH_MENU && popupState != TopPopupState.COLOR_MENU) {
+            drawTopMenuBar(canvas, w, topBarH, sideFrame, pal, timeSec)
+        }
 
-        // 5. Draw Active Popup Menu Directly Below Top Bar (0px Vertical Gap)
+        // 5. Draw Active Popup Menu or 1-to-1 Brush / Color Modal
         currentPopupBounds.setEmpty()
         when (popupState) {
             TopPopupState.NONE -> {}
@@ -275,17 +295,31 @@ class SketchWorkspaceView(
             TopPopupState.EXPORT_AS_MENU -> drawFormatListMenu(canvas, sideFrame, topBarH, sx, "Export As", pal)
             TopPopupState.SHARE_AS_MENU -> drawFormatListMenu(canvas, sideFrame, topBarH, sx, "Share As", pal)
             TopPopupState.MOD_MENU -> drawModMenu(canvas, sideFrame, topBarH, sx, pal)
-            TopPopupState.BRUSH_MENU -> drawBrushMenu(canvas, sideFrame, topBarH, sx, pal)
+            TopPopupState.BRUSH_MENU -> {
+                brushAndColorModal.draw(canvas, w, h, isColorMode = false)
+                currentPopupBounds.set(brushAndColorModal.outerCardRect)
+            }
+            TopPopupState.COLOR_MENU -> {
+                brushAndColorModal.draw(canvas, w, h, isColorMode = true)
+                currentPopupBounds.set(brushAndColorModal.outerCardRect)
+            }
         }
 
-        if (!currentPopupBounds.isEmpty) {
+        if (!currentPopupBounds.isEmpty && popupState != TopPopupState.BRUSH_MENU && popupState != TopPopupState.COLOR_MENU) {
             modEngine.renderPopupAnimatedBorder(canvas, currentPopupBounds, timeSec)
         }
 
-        // 6. Status Banner
+        // 6. Non-Closable "Saving sketch..." Modal Overlay (Prevents multi-click & shows live progress)
+        if (isSavingInProgress) {
+            drawSavingModalOverlay(canvas, w, h, sx)
+            savingAnimAngle = (savingAnimAngle + 12f) % 360f
+            postInvalidateOnAnimation()
+        }
+
+        // 7. Status Banner
         val now = System.currentTimeMillis()
         val bannerMsg = statusBannerText
-        if (bannerMsg != null && now < statusBannerExpiry) {
+        if (bannerMsg != null && now < statusBannerExpiry && !isSavingInProgress) {
             textPaint.textSize = 30f * sx
             textPaint.color = Color.WHITE
             textPaint.textAlign = Paint.Align.CENTER
@@ -306,6 +340,45 @@ class SketchWorkspaceView(
         }
     }
 
+    private fun drawSavingModalOverlay(canvas: Canvas, w: Float, h: Float, sx: Float) {
+        bgPaint.color = Color.argb(145, 0, 0, 0)
+        canvas.drawRect(0f, 0f, w, h, bgPaint)
+
+        val cardW = 560f * sx
+        val cardH = 240f * sx
+        val cardRect = RectF((w - cardW) * 0.5f, (h - cardH) * 0.5f, (w + cardW) * 0.5f, (h + cardH) * 0.5f)
+        bgPaint.color = Color.rgb(245, 245, 245)
+        canvas.drawRect(cardRect, bgPaint)
+        borderPaint.color = Color.rgb(55, 116, 205)
+        borderPaint.strokeWidth = 3f * sx
+        canvas.drawRect(cardRect, borderPaint)
+
+        // Animated spinner ring
+        val spinCx = cardRect.left + 110f * sx
+        val spinCy = cardRect.centerY()
+        val spinR = 42f * sx
+        borderPaint.color = Color.rgb(210, 210, 210)
+        borderPaint.strokeWidth = 8f * sx
+        canvas.drawCircle(spinCx, spinCy, spinR, borderPaint)
+        borderPaint.color = Color.rgb(55, 116, 205)
+        canvas.drawArc(RectF(spinCx - spinR, spinCy - spinR, spinCx + spinR, spinCy + spinR), savingAnimAngle, 110f, false, borderPaint)
+
+        textPaint.color = Color.rgb(30, 30, 30)
+        textPaint.textSize = 38f * sx
+        textPaint.textAlign = Paint.Align.LEFT
+        textPaint.isFakeBoldText = true
+        canvas.drawText("Saving sketch...", cardRect.left + 185f * sx, spinCy - 6f * sx, textPaint)
+        textPaint.isFakeBoldText = false
+
+        subTextPaint.color = Color.rgb(105, 105, 105)
+        subTextPaint.textSize = 27f * sx
+        subTextPaint.textAlign = Paint.Align.LEFT
+        canvas.drawText("${project.width} × ${project.height} px", cardRect.left + 185f * sx, spinCy + 40f * sx, subTextPaint)
+    }
+
+    // ==========================================================================
+    // TOP BAR (Buttons 1 [Menu], 2 [Undo], 3 [Redo], 5 [Brush], 6 [Color] Active)
+    // ==========================================================================
     private fun drawTopMenuBar(canvas: Canvas, w: Float, topBarH: Float, sideFrame: Float, pal: ModUiPalette, timeSec: Float) {
         bgPaint.style = Paint.Style.FILL
         bgPaint.color = pal.topBarBg
@@ -321,14 +394,9 @@ class SketchWorkspaceView(
         val slotW = innerW / 8f
         val cy = topBarH / 2f
 
-        val activeSlot = when (popupState) {
-            TopPopupState.NONE -> -1
-            TopPopupState.BRUSH_MENU -> 4
-            else -> 0
-        }
-        if (activeSlot >= 0) {
+        if (popupState != TopPopupState.NONE) {
             bgPaint.color = pal.topBarActiveSlot
-            canvas.drawRect(sideFrame + slotW * activeSlot, 0f, sideFrame + slotW * (activeSlot + 1), topBarH, bgPaint)
+            canvas.drawRect(sideFrame, 0f, sideFrame + slotW, topBarH, bgPaint)
         }
 
         for (i in 0 until 8) {
@@ -353,222 +421,14 @@ class SketchWorkspaceView(
                     SketchIcons.drawTopIcon5PencilPen(canvas, cx, cy, topBarH, pal.iconTint)
                     hitZones.add(HitZone("TOP_BTN_BRUSH", slotRect))
                 }
-                5 -> SketchIcons.drawTopIcon6ColorWheel(canvas, cx, cy, topBarH)
+                5 -> {
+                    SketchIcons.drawTopIcon6ColorWheel(canvas, cx, cy, topBarH)
+                    hitZones.add(HitZone("TOP_BTN_COLOR", slotRect))
+                }
                 6 -> SketchIcons.drawTopIcon7Layers(canvas, cx, cy, topBarH, pal.iconTint, pal.topBarBg)
                 7 -> SketchIcons.drawTopIcon8Viewfinder(canvas, cx, cy, topBarH, pal.iconTint)
             }
         }
-    }
-
-    private fun drawBrushMenu(canvas: Canvas, left: Float, top: Float, sx: Float, pal: ModUiPalette) {
-        val panelW = 660f * sx
-        val panelH = 980f * sx
-        val popLeft = (width - panelW) / 2f
-        val right = popLeft + panelW
-        val bottom = top + panelH
-        currentPopupBounds.set(popLeft, top, right, bottom)
-
-        bgPaint.color = pal.popupBg
-        canvas.drawRect(currentPopupBounds, bgPaint)
-        borderPaint.color = pal.borderColor
-        borderPaint.strokeWidth = 2f * sx
-        canvas.drawRect(currentPopupBounds, borderPaint)
-
-        val headerH = 118f * sx
-        bgPaint.color = pal.popupHeaderBg
-        canvas.drawRect(popLeft, top, right, top + headerH, bgPaint)
-        textPaint.color = pal.textPrimary
-        textPaint.textSize = 36f * sx
-        textPaint.textAlign = Paint.Align.LEFT
-        textPaint.isFakeBoldText = true
-        canvas.drawText(brushConfig.mode.title, popLeft + 28f * sx, top + 72f * sx, textPaint)
-        textPaint.isFakeBoldText = false
-
-        val resetRect = RectF(right - 210f * sx, top + 22f * sx, right - 22f * sx, top + headerH - 22f * sx)
-        bgPaint.color = pal.cardBg
-        canvas.drawRect(resetRect, bgPaint)
-        borderPaint.color = pal.borderColor
-        canvas.drawRect(resetRect, borderPaint)
-        subTextPaint.color = pal.textPrimary
-        subTextPaint.textSize = 24f * sx
-        subTextPaint.textAlign = Paint.Align.CENTER
-        canvas.drawText("Reset View", resetRect.centerX(), resetRect.centerY() + 9f * sx, subTextPaint)
-        hitZones.add(HitZone("BRUSH_RESET_VIEW", resetRect))
-
-        var cy = top + headerH + 22f * sx
-
-        val prevH = 150f * sx
-        val prevRect = RectF(popLeft + 26f * sx, cy, right - 26f * sx, cy + prevH)
-        bgPaint.color = pal.paperTint
-        canvas.drawRect(prevRect, bgPaint)
-        borderPaint.color = pal.borderColor
-        canvas.drawRect(prevRect, borderPaint)
-
-        drawLiveBrushSinePreview(canvas, prevRect, sx)
-        cy += prevH + 24f * sx
-
-        val modes = CoolBrushMode.values()
-        val tabW = (panelW - 52f * sx) / modes.size
-        val tabH = 74f * sx
-        for ((i, m) in modes.withIndex()) {
-            val tx = popLeft + 26f * sx + i * tabW
-            val tRect = RectF(tx, cy, tx + tabW, cy + tabH)
-            val sel = (brushConfig.mode == m)
-            bgPaint.color = if (sel) pal.accentColor else pal.cardBg
-            canvas.drawRect(tRect, bgPaint)
-            borderPaint.color = pal.borderColor
-            canvas.drawRect(tRect, borderPaint)
-
-            subTextPaint.color = if (sel) Color.WHITE else pal.textPrimary
-            subTextPaint.textSize = 24f * sx
-            subTextPaint.textAlign = Paint.Align.CENTER
-            val shortName = when (m) {
-                CoolBrushMode.STUDIO_INK -> "Studio Ink"
-                CoolBrushMode.NEON_GLOW -> "Neon Glow"
-                CoolBrushMode.CHISEL_PEN -> "Chisel Pen"
-            }
-            canvas.drawText(shortName, tRect.centerX(), tRect.centerY() + 9f * sx, subTextPaint)
-            hitZones.add(HitZone("BRUSH_MODE_SELECT", tRect, i))
-        }
-        cy += tabH + 34f * sx
-
-        cy = drawSharpBrushSlider(
-            canvas, popLeft + 28f * sx, right - 28f * sx, cy, sx, pal,
-            label = "Size",
-            valueText = "${brushConfig.sizePx.roundToInt()} px",
-            fraction = ((brushConfig.sizePx - 2f) / 148f).coerceIn(0f, 1f),
-            outRect = brushSizeSliderRect
-        )
-        cy = drawSharpBrushSlider(
-            canvas, popLeft + 28f * sx, right - 28f * sx, cy, sx, pal,
-            label = "Opacity",
-            valueText = "${(brushConfig.opacity * 100 / 255)}%",
-            fraction = (brushConfig.opacity / 255f).coerceIn(0f, 1f),
-            outRect = brushOpacitySliderRect
-        )
-        cy = drawSharpBrushSlider(
-            canvas, popLeft + 28f * sx, right - 28f * sx, cy, sx, pal,
-            label = "Streamline",
-            valueText = "${(brushConfig.smoothing * 100).roundToInt()}%",
-            fraction = brushConfig.smoothing.coerceIn(0f, 1f),
-            outRect = brushSmoothSliderRect
-        )
-
-        cy += 12f * sx
-        val swatches = intArrayOf(
-            Color.rgb(20, 24, 30),
-            Color.rgb(37, 99, 235),
-            Color.rgb(0, 200, 255),
-            Color.rgb(225, 29, 72),
-            Color.rgb(16, 185, 129),
-            Color.rgb(245, 158, 11),
-            Color.rgb(139, 92, 246),
-            Color.WHITE
-        )
-        val swGap = 14f * sx
-        val swSize = ((panelW - 56f * sx - swGap * (swatches.size - 1)) / swatches.size)
-        for (i in swatches.indices) {
-            val sxLeft = popLeft + 28f * sx + i * (swSize + swGap)
-            val swRect = RectF(sxLeft, cy, sxLeft + swSize, cy + swSize)
-            bgPaint.color = swatches[i]
-            canvas.drawRect(swRect, bgPaint)
-            borderPaint.color = if (brushConfig.color == swatches[i]) pal.accentColor else Color.rgb(140, 140, 140)
-            borderPaint.strokeWidth = if (brushConfig.color == swatches[i]) 4.5f * sx else 2f * sx
-            canvas.drawRect(swRect, borderPaint)
-            hitZones.add(HitZone("BRUSH_SWATCH", swRect, swatches[i]))
-        }
-        cy += swSize + 28f * sx
-
-        val clearRect = RectF(popLeft + 28f * sx, cy, right - 28f * sx, cy + 74f * sx)
-        bgPaint.color = pal.cardBg
-        canvas.drawRect(clearRect, bgPaint)
-        borderPaint.color = pal.borderColor
-        borderPaint.strokeWidth = 2f * sx
-        canvas.drawRect(clearRect, borderPaint)
-        textPaint.color = pal.textPrimary
-        textPaint.textSize = 29f * sx
-        textPaint.textAlign = Paint.Align.CENTER
-        canvas.drawText("Clear Canvas Layer", clearRect.centerX(), clearRect.centerY() + 10f * sx, textPaint)
-        hitZones.add(HitZone("BRUSH_CLEAR_CANVAS", clearRect))
-    }
-
-    private fun drawLiveBrushSinePreview(canvas: Canvas, rect: RectF, sx: Float) {
-        canvas.save()
-        canvas.clipRect(rect)
-        val steps = 48
-        val padX = 36f * sx
-        val usableW = rect.width() - padX * 2f
-        val cy = rect.centerY()
-        val amp = rect.height() * 0.26f
-
-        for (i in 0..steps) {
-            val t = i.toFloat() / steps.toFloat()
-            val x = rect.left + padX + t * usableW
-            val y = cy + sin(t * Math.PI * 2.0).toFloat() * amp
-            val taper = sin(t * Math.PI).toFloat().coerceIn(0.12f, 1f)
-            val rad = (brushConfig.sizePx * 0.5f * sx * taper).coerceAtLeast(1.5f)
-
-            if (brushConfig.mode == CoolBrushMode.NEON_GLOW) {
-                strokePaint.color = brushConfig.color
-                strokePaint.alpha = (brushConfig.opacity * 0.22f).toInt().coerceIn(10, 120)
-                canvas.drawCircle(x, y, rad * 2.2f, strokePaint)
-                strokePaint.color = Color.WHITE
-                strokePaint.alpha = brushConfig.opacity
-                canvas.drawCircle(x, y, rad * 0.65f, strokePaint)
-            } else if (brushConfig.mode == CoolBrushMode.CHISEL_PEN) {
-                strokePaint.color = brushConfig.color
-                strokePaint.alpha = brushConfig.opacity
-                canvas.save()
-                canvas.translate(x, y)
-                canvas.rotate(-35f)
-                canvas.drawRect(-rad * 1.4f, -rad * 0.35f, rad * 1.4f, rad * 0.35f, strokePaint)
-                canvas.restore()
-            } else {
-                strokePaint.color = brushConfig.color
-                strokePaint.alpha = brushConfig.opacity
-                canvas.drawCircle(x, y, rad, strokePaint)
-            }
-        }
-        canvas.restore()
-    }
-
-    private fun drawSharpBrushSlider(
-        canvas: Canvas,
-        left: Float,
-        right: Float,
-        top: Float,
-        sx: Float,
-        pal: ModUiPalette,
-        label: String,
-        valueText: String,
-        fraction: Float,
-        outRect: RectF
-    ): Float {
-        subTextPaint.color = pal.textPrimary
-        subTextPaint.textSize = 27f * sx
-        subTextPaint.textAlign = Paint.Align.LEFT
-        canvas.drawText(label, left, top + 28f * sx, subTextPaint)
-
-        subTextPaint.textAlign = Paint.Align.RIGHT
-        subTextPaint.color = pal.textSecondary
-        canvas.drawText(valueText, right, top + 28f * sx, subTextPaint)
-
-        val trackTop = top + 44f * sx
-        val trackH = 38f * sx
-        outRect.set(left, trackTop, right, trackTop + trackH)
-
-        bgPaint.color = pal.inputBg
-        canvas.drawRect(outRect, bgPaint)
-
-        val fillW = outRect.width() * fraction
-        bgPaint.color = pal.accentColor
-        canvas.drawRect(left, trackTop, left + fillW, trackTop + trackH, bgPaint)
-
-        borderPaint.color = pal.borderColor
-        borderPaint.strokeWidth = 2f * sx
-        canvas.drawRect(outRect, borderPaint)
-
-        return trackTop + trackH + 26f * sx
     }
 
     private fun drawButton1MainMenu(canvas: Canvas, left: Float, top: Float, sx: Float, pal: ModUiPalette) {
@@ -1153,7 +1013,6 @@ class SketchWorkspaceView(
         borderPaint.color = pal.borderColor
         canvas.drawLine(left, nameBot, right, nameBot, borderPaint)
 
-        // Explicitly set Paint.Align.LEFT here so active inline editing never shifts "Save current sketch"!
         val r1Top = nameBot
         val r1Bot = r1Top + itemRowH
         SketchIcons.drawPictureSaveIcon(canvas, left + 58f * sx, r1Top + itemRowH / 2f, 52f * sx, isCopy = false, color = pal.iconTint, bgMask = pal.popupBg)
@@ -1424,19 +1283,73 @@ class SketchWorkspaceView(
     }
 
     // ==========================================================================
-    // TOUCH ENGINE: PIVOT-LOCKED 2-FINGER TRANSFORM + ZERO STRAY PINCH STROKES
+    // TOUCH ENGINE: NON-CLOSABLE SAVING LOCK + OUTSIDE-TAP AUTO-CLOSE & DRAW
     // ==========================================================================
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // Block all touch input while the non-closable "Saving sketch..." modal is running!
+        if (isSavingInProgress) return true
+
         val x = event.x
         val y = event.y
         val sx = width / 1080f
         val topBarH = 131f * sx
         maxPointersInGesture = max(maxPointersInGesture, event.pointerCount)
 
-        // 1. Handle 2-Finger Pinch Zoom, Pan & Rotation (Cancels any un-committed 1-finger start!)
+        // If Brush or Color Modal is open:
+        if (popupState == TopPopupState.BRUSH_MENU || popupState == TopPopupState.COLOR_MENU) {
+            val isColor = (popupState == TopPopupState.COLOR_MENU)
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                // If user taps OUTSIDE the modal & bottom circles, close the modal immediately and fall through to draw!
+                if (!brushAndColorModal.isTouchInsideModalOrBottomBar(x, y, width.toFloat(), height.toFloat())) {
+                    popupState = TopPopupState.NONE
+                    brushAndColorModal.subOverlay = BrushSubOverlay.NONE
+                    invalidate()
+                    // Fall through so drawing or top-bar click happens immediately without blocking!
+                } else {
+                    return brushAndColorModal.onTouchEvent(event, width.toFloat(), height.toFloat(), isColor)
+                }
+            } else {
+                return brushAndColorModal.onTouchEvent(event, width.toFloat(), height.toFloat(), isColor)
+            }
+        }
+
+        // If any other popup is open and user touches outside both the popup AND the top bar on ACTION_DOWN:
+        // Close the popup immediately and fall through so canvas drawing or 2-finger zoom starts right away!
+        if (event.actionMasked == MotionEvent.ACTION_DOWN && popupState != TopPopupState.NONE) {
+            if (!currentPopupBounds.contains(x, y) && y > topBarH) {
+                closeInlineEditor()
+                popupState = TopPopupState.NONE
+                invalidate()
+                // Fall through so drawing starts immediately on this exact touch!
+            }
+        }
+
+        // On-Canvas Eyedropper Sampling
+        if (isCanvasEyedropperActive && popupState == TopPopupState.NONE && y > topBarH) {
+            if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_MOVE) {
+                val cPt = screenToCanvasPoint(x, y)
+                val bmp = project.ensureCanvasBitmap()
+                val px = cPt.x.toInt().coerceIn(0, bmp.width - 1)
+                val py = cPt.y.toInt().coerceIn(0, bmp.height - 1)
+                val sampled = bmp.getPixel(px, py)
+                val finalCol = if (Color.alpha(sampled) < 20) modEngine.resolveUiPalette().paperTint else sampled
+                brushAndColorModal.colorState.setFromColorInt(finalCol, recordPrevious = true)
+                brushAndColorModal.colorState.pushToHistory(finalCol)
+                if (event.actionMasked == MotionEvent.ACTION_UP) {
+                    isCanvasEyedropperActive = false
+                }
+                showBanner(String.format("Picked #%06X", 0xFFFFFF and finalCol))
+                invalidate()
+            }
+            if (event.actionMasked == MotionEvent.ACTION_UP) {
+                isCanvasEyedropperActive = false
+            }
+            return true
+        }
+
+        // 2-Finger Pinch Zoom, Pan & Rotation
         if (event.pointerCount >= 2 && popupState == TopPopupState.NONE) {
             abortPresetLongPress()
-            // Discard pending 1-finger points so zooming NEVER leaves stray dots at finger tips!
             pendingStrokeSamples.clear()
             isDrawingStroke = false
             strokeCommittedToBitmap = false
@@ -1465,7 +1378,6 @@ class SketchWorkspaceView(
                 if (dAngle > 180f) dAngle -= 360f
                 if (dAngle < -180f) dAngle += 360f
 
-                // SketchBook Pivot-Locked Incremental Matrix Transform around (midX, midY)
                 userTransformMatrix.postTranslate(dx, dy)
                 userTransformMatrix.postScale(scaleFactor, scaleFactor, midX, midY)
                 userTransformMatrix.postRotate(dAngle, midX, midY)
@@ -1498,31 +1410,9 @@ class SketchWorkspaceView(
                 isScrollingMods = false
                 isDraggingPreset = false
                 draggedPresetIndex = -1
-                isDraggingBrushSlider = null
                 pendingStrokeSamples.clear()
                 strokeCommittedToBitmap = false
 
-                if (popupState == TopPopupState.BRUSH_MENU) {
-                    when {
-                        brushSizeSliderRect.contains(x, y) -> {
-                            isDraggingBrushSlider = "SIZE"
-                            updateBrushSliderFromX(x)
-                            return true
-                        }
-                        brushOpacitySliderRect.contains(x, y) -> {
-                            isDraggingBrushSlider = "OPACITY"
-                            updateBrushSliderFromX(x)
-                            return true
-                        }
-                        brushSmoothSliderRect.contains(x, y) -> {
-                            isDraggingBrushSlider = "SMOOTH"
-                            updateBrushSliderFromX(x)
-                            return true
-                        }
-                    }
-                }
-
-                // Buffer initial touch point instead of immediately stamping, preventing 2-finger pinch dots!
                 if (popupState == TopPopupState.NONE && y > topBarH) {
                     closeInlineEditor()
                     val cPt = screenToCanvasPoint(x, y)
@@ -1534,6 +1424,11 @@ class SketchWorkspaceView(
                         lastCanvasPt.set(cPt.x, cPt.y)
                         prevCanvasPt.set(cPt.x, cPt.y)
                         lastStrokeSpeed = 0f
+                        // Initialize smudge pickup color under starting point
+                        val sxInt = cPt.x.toInt().coerceIn(0, bmp.width - 1)
+                        val syInt = cPt.y.toInt().coerceIn(0, bmp.height - 1)
+                        val under = bmp.getPixel(sxInt, syInt)
+                        smudgeCarryColor = if (Color.alpha(under) < 15) modEngine.resolveUiPalette().paperTint else under
                         pendingStrokeSamples.add(QueuedStrokeSample(PointF(cPt.x, cPt.y), event.pressure))
                         return true
                     }
@@ -1566,29 +1461,22 @@ class SketchWorkspaceView(
                 val dy = y - lastTouchY
                 lastTouchY = y
 
-                if (isDraggingBrushSlider != null) {
-                    updateBrushSliderFromX(x)
-                    return true
-                }
-
                 if (isDrawingStroke && maxPointersInGesture == 1) {
                     val rawPt = screenToCanvasPoint(x, y)
-                    val alpha = (1f - brushConfig.smoothing * 0.82f).coerceIn(0.15f, 1f)
-                    smoothX += (rawPt.x - smoothX) * alpha
-                    smoothY += (rawPt.y - smoothY) * alpha
+                    smoothX += (rawPt.x - smoothX) * 0.55f
+                    smoothY += (rawPt.y - smoothY) * 0.55f
                     val curPt = PointF(smoothX, smoothY)
 
                     val elapsed = System.currentTimeMillis() - gestureDownTimeMs
                     if (!strokeCommittedToBitmap) {
-                        // Wait 45ms grace window to ensure a 2nd finger isn't landing for a pinch
-                        if (elapsed < 45L) {
+                        if (elapsed < 42L) {
                             pendingStrokeSamples.add(QueuedStrokeSample(curPt, event.pressure))
                             return true
                         }
                         commitPendingStrokeSamples()
                     }
 
-                    stampCoolBrushSegment(prevCanvasPt, lastCanvasPt, curPt, event.pressure)
+                    stampSelectedBrushSegment(prevCanvasPt, lastCanvasPt, curPt, event.pressure)
                     prevCanvasPt.set(lastCanvasPt)
                     lastCanvasPt.set(curPt)
                     invalidate()
@@ -1633,7 +1521,6 @@ class SketchWorkspaceView(
 
             MotionEvent.ACTION_UP -> {
                 abortPresetLongPress()
-                isDraggingBrushSlider = null
                 if (isDrawingStroke) {
                     if (maxPointersInGesture == 1 && !strokeCommittedToBitmap && pendingStrokeSamples.isNotEmpty()) {
                         commitPendingStrokeSamples()
@@ -1671,7 +1558,6 @@ class SketchWorkspaceView(
                 isDraggingPreset = false
                 isScrollingPresets = false
                 isScrollingMods = false
-                isDraggingBrushSlider = null
                 maxPointersInGesture = 0
                 invalidate()
                 return true
@@ -1685,37 +1571,22 @@ class SketchWorkspaceView(
         strokeCommittedToBitmap = true
         project.pushUndoSnapshot()
         project.isDirty = true
+        if (!brushAndColorModal.colorState.isColorlessEraser) {
+            brushAndColorModal.colorState.pushToHistory(brushAndColorModal.colorState.currentColor)
+        }
 
         val first = pendingStrokeSamples[0].pt
         prevCanvasPt.set(first)
         lastCanvasPt.set(first)
-        stampCoolBrushSegment(prevCanvasPt, lastCanvasPt, first, pendingStrokeSamples[0].pressure)
+        stampSelectedBrushSegment(prevCanvasPt, lastCanvasPt, first, pendingStrokeSamples[0].pressure)
 
         for (i in 1 until pendingStrokeSamples.size) {
             val s = pendingStrokeSamples[i]
-            stampCoolBrushSegment(prevCanvasPt, lastCanvasPt, s.pt, s.pressure)
+            stampSelectedBrushSegment(prevCanvasPt, lastCanvasPt, s.pt, s.pressure)
             prevCanvasPt.set(lastCanvasPt)
             lastCanvasPt.set(s.pt)
         }
         pendingStrokeSamples.clear()
-    }
-
-    private fun updateBrushSliderFromX(x: Float) {
-        when (isDraggingBrushSlider) {
-            "SIZE" -> {
-                val f = ((x - brushSizeSliderRect.left) / brushSizeSliderRect.width()).coerceIn(0f, 1f)
-                brushConfig.sizePx = 2f + f * 148f
-            }
-            "OPACITY" -> {
-                val f = ((x - brushOpacitySliderRect.left) / brushOpacitySliderRect.width()).coerceIn(0f, 1f)
-                brushConfig.opacity = (f * 255f).roundToInt().coerceIn(8, 255)
-            }
-            "SMOOTH" -> {
-                val f = ((x - brushSmoothSliderRect.left) / brushSmoothSliderRect.width()).coerceIn(0f, 1f)
-                brushConfig.smoothing = f
-            }
-        }
-        invalidate()
     }
 
     private fun screenToCanvasPoint(sx: Float, sy: Float): PointF {
@@ -1724,9 +1595,15 @@ class SketchWorkspaceView(
         return PointF(pts[0], pts[1])
     }
 
-    private fun stampCoolBrushSegment(p0: PointF, p1: PointF, p2: PointF, pressure: Float) {
+    /**
+     * Multi-Type SOTA Brush Dab Renderer supporting Standard, Marker, Smudge, Glow & Eraser,
+     * plus Basic (Size, Opacity) and Advanced (Pressure, Stamp, Nib, Randomness) parameters.
+     */
+    private fun stampSelectedBrushSegment(p0: PointF, p1: PointF, p2: PointF, rawPressure: Float) {
         val bmp = project.ensureCanvasBitmap()
         val c = Canvas(bmp)
+        val brush = brushAndColorModal.selectedBrush()
+        val colState = brushAndColorModal.colorState
 
         val mid1X = (p0.x + p1.x) * 0.5f
         val mid1Y = (p0.y + p1.y) * 0.5f
@@ -1736,41 +1613,120 @@ class SketchWorkspaceView(
         val segDist = hypot(mid2X - mid1X, mid2Y - mid1Y)
         lastStrokeSpeed = lastStrokeSpeed * 0.7f + segDist * 0.3f
 
-        val speedFactor = (1f - (lastStrokeSpeed / 65f).coerceIn(0f, 0.55f))
-        val pressFactor = if (pressure > 0.01f && pressure != 1.0f) pressure.coerceIn(0.2f, 1.3f) else 1f
-        val baseRadius = (brushConfig.sizePx * 0.5f * speedFactor * pressFactor).coerceAtLeast(1.2f)
+        val pNorm = if (rawPressure > 0.01f && rawPressure != 1.0f) rawPressure.coerceIn(0.1f, 1f) else (1f - (lastStrokeSpeed / 85f).coerceIn(0f, 0.55f))
+        val sizePressScale = (brush.sizeLightPressure + (brush.sizeHeavyPressure - brush.sizeLightPressure) * pNorm) / 100f
+        val opacPressScale = (brush.opacityLightPressure + (brush.opacityHeavyPressure - brush.opacityLightPressure) * pNorm) / 100f
 
-        val steps = max(1, (segDist / max(1f, baseRadius * 0.22f)).toInt())
+        val baseRadius = (brush.size * 0.5f * sizePressScale.coerceIn(0.15f, 1.5f)).coerceAtLeast(1f)
+        val baseAlpha = ((brush.opacity / 100f) * opacPressScale.coerceIn(0.1f, 1f) * 255f).roundToInt().coerceIn(4, 255)
+
+        val stepDist = max(1f, baseRadius * (brush.spacing / 50f).coerceIn(0.08f, 1.8f))
+        val steps = max(1, (segDist / stepDist).toInt())
+
+        val isEraser = (brush.brushType == SketchBrushType.ERASER || colState.isColorlessEraser)
+        val baseColor = colState.currentColor
+        val cr = Color.red(baseColor)
+        val cg = Color.green(baseColor)
+        val cb = Color.blue(baseColor)
+
         for (i in 0..steps) {
             val t = i.toFloat() / steps.toFloat()
             val invT = 1f - t
-            val x = invT * invT * mid1X + 2f * invT * t * p1.x + t * t * mid2X
-            val y = invT * invT * mid1Y + 2f * invT * t * p1.y + t * t * mid2Y
+            var x = invT * invT * mid1X + 2f * invT * t * p1.x + t * t * mid2X
+            var y = invT * invT * mid1Y + 2f * invT * t * p1.y + t * t * mid2Y
 
-            when (brushConfig.mode) {
-                CoolBrushMode.STUDIO_INK -> {
-                    strokePaint.color = brushConfig.color
-                    strokePaint.alpha = brushConfig.opacity
-                    c.drawCircle(x, y, baseRadius, strokePaint)
+            // Apply Scatter Jitter
+            if (brush.scatterJitter > 1f) {
+                val sc = baseRadius * (brush.scatterJitter / 50f)
+                x += (Random.nextFloat() - 0.5f) * sc * 2f
+                y += (Random.nextFloat() - 0.5f) * sc * 2f
+            }
+
+            // Apply Size & Opacity Jitter
+            val rJit = if (brush.sizeJitter > 1f) 1f - Random.nextFloat() * (brush.sizeJitter / 110f) else 1f
+            val oJit = if (brush.opacityJitter > 1f) 1f - Random.nextFloat() * (brush.opacityJitter / 110f) else 1f
+            val rad = (baseRadius * rJit).coerceAtLeast(1f)
+            val dabAlpha = (baseAlpha * oJit).roundToInt().coerceIn(2, 255)
+
+            if (isEraser) {
+                strokePaint.xfermode = clearXfermode
+                strokePaint.shader = null
+                strokePaint.color = Color.argb(dabAlpha, 0, 0, 0)
+                c.drawCircle(x, y, rad, strokePaint)
+                strokePaint.xfermode = null
+                continue
+            }
+
+            when (brush.brushType) {
+                SketchBrushType.SMUDGE -> {
+                    val sxInt = x.toInt().coerceIn(0, bmp.width - 1)
+                    val syInt = y.toInt().coerceIn(0, bmp.height - 1)
+                    val canvasCol = bmp.getPixel(sxInt, syInt)
+                    if (Color.alpha(canvasCol) > 15) {
+                        val mix = 0.25f
+                        val mr = (Color.red(smudgeCarryColor) * (1f - mix) + Color.red(canvasCol) * mix).toInt()
+                        val mg = (Color.green(smudgeCarryColor) * (1f - mix) + Color.green(canvasCol) * mix).toInt()
+                        val mb = (Color.blue(smudgeCarryColor) * (1f - mix) + Color.blue(canvasCol) * mix).toInt()
+                        smudgeCarryColor = Color.rgb(mr, mg, mb)
+                    }
+                    strokePaint.xfermode = null
+                    strokePaint.shader = null
+                    strokePaint.color = Color.argb((dabAlpha * 0.45f).toInt().coerceIn(8, 160), Color.red(smudgeCarryColor), Color.green(smudgeCarryColor), Color.blue(smudgeCarryColor))
+                    c.drawCircle(x, y, rad, strokePaint)
                 }
-                CoolBrushMode.NEON_GLOW -> {
-                    strokePaint.color = brushConfig.color
-                    strokePaint.alpha = (brushConfig.opacity * 0.16f).toInt().coerceIn(6, 70)
-                    c.drawCircle(x, y, baseRadius * 2.3f, strokePaint)
-                    strokePaint.alpha = (brushConfig.opacity * 0.38f).toInt().coerceIn(12, 130)
-                    c.drawCircle(x, y, baseRadius * 1.35f, strokePaint)
-                    strokePaint.color = Color.WHITE
-                    strokePaint.alpha = brushConfig.opacity
-                    c.drawCircle(x, y, baseRadius * 0.55f, strokePaint)
-                }
-                CoolBrushMode.CHISEL_PEN -> {
-                    strokePaint.color = brushConfig.color
-                    strokePaint.alpha = brushConfig.opacity
+
+                SketchBrushType.MARKER -> {
+                    strokePaint.xfermode = multiplyXfermode
+                    strokePaint.shader = null
+                    strokePaint.color = Color.argb((dabAlpha * 0.35f).toInt().coerceIn(6, 140), cr, cg, cb)
                     c.save()
                     c.translate(x, y)
-                    c.rotate(-35f)
-                    c.drawRect(-baseRadius * 1.45f, -baseRadius * 0.32f, baseRadius * 1.45f, baseRadius * 0.32f, strokePaint)
+                    c.rotate(brush.rotation)
+                    val ry = rad * (brush.roundness / 100f).coerceIn(0.18f, 1f)
+                    c.drawOval(RectF(-rad, -ry, rad, ry), strokePaint)
                     c.restore()
+                    strokePaint.xfermode = null
+                }
+
+                SketchBrushType.GLOW -> {
+                    strokePaint.xfermode = null
+                    strokePaint.shader = null
+                    strokePaint.color = Color.argb((dabAlpha * 0.16f).toInt().coerceIn(4, 70), cr, cg, cb)
+                    c.drawCircle(x, y, rad * 2.1f, strokePaint)
+                    strokePaint.color = Color.argb((dabAlpha * 0.38f).toInt().coerceIn(10, 140), cr, cg, cb)
+                    c.drawCircle(x, y, rad * 1.25f, strokePaint)
+                    strokePaint.color = Color.argb(dabAlpha, 255, 255, 255)
+                    c.drawCircle(x, y, rad * 0.45f, strokePaint)
+                }
+
+                else -> { // STANDARD (supports soft airbrush hardness, elliptical nib, and grain)
+                    strokePaint.xfermode = null
+                    if (brush.hardness < 55f) {
+                        val innerStop = (brush.hardness / 100f).coerceIn(0.05f, 0.85f)
+                        val softAlpha = (dabAlpha * 0.42f).toInt().coerceIn(4, 180)
+                        strokePaint.shader = RadialGradient(
+                            x, y, rad.coerceAtLeast(2f),
+                            intArrayOf(Color.argb(softAlpha, cr, cg, cb), Color.argb(softAlpha / 2, cr, cg, cb), Color.TRANSPARENT),
+                            floatArrayOf(0f, innerStop, 1f),
+                            Shader.TileMode.CLAMP
+                        )
+                    } else {
+                        strokePaint.shader = null
+                        val effAlpha = if (brush.grainStrength > 25f) (dabAlpha * 0.65f).toInt().coerceAtLeast(8) else dabAlpha
+                        strokePaint.color = Color.argb(effAlpha, cr, cg, cb)
+                    }
+
+                    if (brush.roundness < 92f) {
+                        c.save()
+                        c.translate(x, y)
+                        c.rotate(brush.rotation)
+                        val ry = rad * (brush.roundness / 100f).coerceIn(0.15f, 1f)
+                        c.drawOval(RectF(-rad, -ry, rad, ry), strokePaint)
+                        c.restore()
+                    } else {
+                        c.drawCircle(x, y, rad, strokePaint)
+                    }
+                    strokePaint.shader = null
                 }
             }
         }
@@ -1828,29 +1784,8 @@ class SketchWorkspaceView(
                 invalidate()
             }
 
-            "BRUSH_RESET_VIEW" -> {
-                resetCanvasTransform()
-                showBanner("Canvas View Reset (100% • 0°)")
-            }
-
-            "BRUSH_MODE_SELECT" -> {
-                val modes = CoolBrushMode.values()
-                if (zone.payload in modes.indices) {
-                    brushConfig.mode = modes[zone.payload]
-                    invalidate()
-                }
-            }
-
-            "BRUSH_SWATCH" -> {
-                brushConfig.color = zone.payload
-                invalidate()
-            }
-
-            "BRUSH_CLEAR_CANVAS" -> {
-                project.pushUndoSnapshot()
-                val bmp = project.ensureCanvasBitmap()
-                bmp.eraseColor(Color.TRANSPARENT)
-                project.isDirty = true
+            "TOP_BTN_COLOR" -> {
+                popupState = if (popupState == TopPopupState.COLOR_MENU) TopPopupState.NONE else TopPopupState.COLOR_MENU
                 invalidate()
             }
 
@@ -2088,11 +2023,11 @@ class SketchWorkspaceView(
             }
 
             "ACTION_SAVE_CURRENT" -> {
-                performSave(asCopy = false)
+                performAsyncSave(asCopy = false, onAfterSave = null)
             }
 
             "ACTION_SAVE_COPY" -> {
-                performSave(asCopy = true)
+                performAsyncSave(asCopy = true, onAfterSave = null)
             }
 
             "OPEN_EXPORT_AS" -> {
@@ -2138,9 +2073,6 @@ class SketchWorkspaceView(
         }
     }
 
-    /**
-     * Creates a new project with a fresh default name (does NOT persist the old file's name!).
-     */
     private fun requestCreateNewProject(targetW: Int, targetH: Int) {
         popupState = TopPopupState.NONE
         invalidate()
@@ -2225,8 +2157,7 @@ class SketchWorkspaceView(
             onProceed()
         }
         val saveBtn = makeSharpBtn("SAVE", Color.rgb(55, 116, 205), Color.WHITE) {
-            performSave(asCopy = false)
-            onProceed()
+            performAsyncSave(asCopy = false, onAfterSave = onProceed)
         }
 
         val lp = LinearLayout.LayoutParams(
@@ -2241,20 +2172,159 @@ class SketchWorkspaceView(
         dialog.show()
     }
 
-    private fun performSave(asCopy: Boolean) {
+    /**
+     * Background Thread Saver with Multi-Click Guard & Non-Closable Saving Modal.
+     */
+    private fun performAsyncSave(asCopy: Boolean, onAfterSave: (() -> Unit)?) {
+        if (isSavingInProgress) return
+        closeInlineEditor()
+        isSavingInProgress = true
+        popupState = TopPopupState.NONE
+        invalidate()
+
         val paperTint = modEngine.resolveUiPalette().paperTint
-        val res = ProjectStorageManager.saveProjectToDevice(context, project, asCopy, paperTint)
-        res.onSuccess { path ->
-            project.isSavedOnce = true
-            project.isDirty = false
-            project.lastSavedPath = path
-            popupState = TopPopupState.NONE
-            showBanner(if (asCopy) "Saved Copy -> $path" else "Saved -> $path")
-            invalidate()
-        }.onFailure { err ->
-            showBanner("Save failed: ${err.message}")
-            invalidate()
+        val appCtx = context.applicationContext
+
+        Thread {
+            val res = ProjectStorageManager.saveProjectToDevice(appCtx, project, asCopy, paperTint)
+            post {
+                isSavingInProgress = false
+                res.onSuccess { path ->
+                    project.isSavedOnce = true
+                    project.isDirty = false
+                    project.lastSavedPath = path
+                    showBanner(if (asCopy) "Saved Copy -> $path" else "Saved -> $path")
+                    onAfterSave?.invoke()
+                }.onFailure { err ->
+                    showBanner("Save failed: ${err.message}")
+                }
+                invalidate()
+            }
+        }.start()
+    }
+
+    fun showSimpleInputModal(title: String, initialValue: String, onConfirm: (String) -> Unit) {
+        val root = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(52, 42, 52, 36)
+            setBackgroundColor(Color.rgb(243, 243, 243))
         }
+        val header = TextView(context).apply {
+            text = title
+            textSize = 17f
+            setTextColor(Color.rgb(35, 35, 35))
+            setPadding(0, 0, 0, 20)
+        }
+        root.addView(header)
+
+        val input = EditText(context).apply {
+            setText(initialValue)
+            setSelection(text.length)
+            setBackgroundColor(Color.WHITE)
+            setTextColor(Color.BLACK)
+            textSize = 17f
+            setPadding(28, 22, 28, 22)
+        }
+        root.addView(input)
+
+        val btnRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(0, 32, 0, 0)
+        }
+        val dlg = AlertDialog.Builder(context).setView(root).create()
+
+        val cancelBtn = TextView(context).apply {
+            text = "CANCEL"
+            setTextColor(Color.rgb(50, 50, 50))
+            setBackgroundColor(Color.rgb(220, 220, 220))
+            setPadding(40, 22, 40, 22)
+            setOnClickListener { dlg.dismiss() }
+        }
+        val okBtn = TextView(context).apply {
+            text = "OK"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.rgb(55, 116, 205))
+            setPadding(52, 22, 52, 22)
+            setOnClickListener {
+                dlg.dismiss()
+                onConfirm(input.text.toString())
+            }
+        }
+        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { leftMargin = 20 }
+        btnRow.addView(cancelBtn)
+        btnRow.addView(okBtn, lp)
+        root.addView(btnRow)
+        dlg.show()
+    }
+
+    /**
+     * Requires user to type "confirm" to delete a Brush Set, as specified.
+     */
+    fun showConfirmDeleteSetModal(setName: String, onConfirmed: () -> Unit) {
+        val root = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(52, 42, 52, 36)
+            setBackgroundColor(Color.rgb(243, 243, 243))
+        }
+        val header = TextView(context).apply {
+            text = "Delete Set '$setName'?"
+            textSize = 18f
+            setTextColor(Color.rgb(185, 45, 45))
+            setPadding(0, 0, 0, 14)
+        }
+        root.addView(header)
+
+        val sub = TextView(context).apply {
+            text = "Type 'confirm' below to permanently delete this brush set:"
+            textSize = 14f
+            setTextColor(Color.rgb(75, 75, 75))
+            setPadding(0, 0, 0, 20)
+        }
+        root.addView(sub)
+
+        val input = EditText(context).apply {
+            hint = "confirm"
+            setBackgroundColor(Color.WHITE)
+            setTextColor(Color.BLACK)
+            textSize = 17f
+            setPadding(28, 22, 28, 22)
+        }
+        root.addView(input)
+
+        val btnRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(0, 32, 0, 0)
+        }
+        val dlg = AlertDialog.Builder(context).setView(root).create()
+
+        val cancelBtn = TextView(context).apply {
+            text = "CANCEL"
+            setTextColor(Color.rgb(50, 50, 50))
+            setBackgroundColor(Color.rgb(220, 220, 220))
+            setPadding(40, 22, 40, 22)
+            setOnClickListener { dlg.dismiss() }
+        }
+        val delBtn = TextView(context).apply {
+            text = "DELETE SET"
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.rgb(195, 50, 50))
+            setPadding(44, 22, 44, 22)
+            setOnClickListener {
+                if (input.text.toString().trim().equals("confirm", ignoreCase = true)) {
+                    dlg.dismiss()
+                    onConfirmed()
+                } else {
+                    showBanner("Please type 'confirm' to delete set")
+                }
+            }
+        }
+        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { leftMargin = 20 }
+        btnRow.addView(cancelBtn)
+        btnRow.addView(delBtn, lp)
+        root.addView(btnRow)
+        dlg.show()
     }
 
     private fun showModScriptEditorDialog() {

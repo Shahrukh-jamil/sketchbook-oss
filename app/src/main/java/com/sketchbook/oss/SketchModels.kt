@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.WindowManager
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -21,7 +22,8 @@ enum class TopPopupState {
     EXPORT_AS_MENU,
     SHARE_AS_MENU,
     MOD_MENU,
-    BRUSH_MENU
+    BRUSH_MENU,
+    COLOR_MENU
 }
 
 enum class NewSketchTab {
@@ -29,19 +31,303 @@ enum class NewSketchTab {
     LIST_PRESETS
 }
 
-enum class CoolBrushMode(val title: String) {
-    STUDIO_INK("Studio Tapered Ink"),
-    NEON_GLOW("Neon Laser Glow"),
-    CHISEL_PEN("Calligraphy Chisel")
+enum class BrushModalTopTab {
+    LIBRARY_GRID,
+    SETTINGS_SLIDERS
 }
 
-data class CoolBrushConfig(
-    var mode: CoolBrushMode = CoolBrushMode.STUDIO_INK,
-    var sizePx: Float = 18f,
-    var opacity: Int = 255,
-    var smoothing: Float = 0.65f,
-    var color: Int = Color.rgb(20, 24, 30)
+enum class BrushSettingsSubTab {
+    BASIC,
+    ADVANCED
+}
+
+enum class BrushSubOverlay {
+    NONE,
+    SET_SETTINGS,
+    BRUSH_ACTIONS,
+    BRUSH_TYPES_DROPDOWN
+}
+
+enum class SketchBrushType(val title: String) {
+    STANDARD("Standard"),
+    MARKER("Marker"),
+    SMUDGE("Smudge"),
+    GLOW("Glow"),
+    ERASER("Eraser")
+}
+
+enum class BrushIconStyle {
+    WOOD_PENCIL,
+    HARD_ERASER,
+    SOFT_ERASER,
+    CHISEL_MARKER,
+    AIRBRUSH,
+    TECHNICAL_PEN,
+    DIAMOND_SHADER,
+    FOUNTAIN_PEN,
+    ROUND_BRUSH,
+    FELT_PEN,
+    BLENDER_CONE,
+    PASTEL_BLOCK,
+    CHARCOAL_STICK,
+    FLAT_BRISTLE,
+    FAN_BRUSH,
+    TEXTURE_FRACTAL,
+    TEXTURE_HATCH,
+    TEXTURE_FROST,
+    TEXTURE_SPLATTER,
+    TEXTURE_NOISE,
+    TEXTURE_GRID
+}
+
+data class SketchBrushItem(
+    val id: String,
+    var name: String,
+    var iconStyle: BrushIconStyle,
+    var brushType: SketchBrushType = SketchBrushType.STANDARD,
+    var size: Float = 24f,
+    var opacity: Float = 100f,
+    // Advanced -> Pressure
+    var sizeHeavyPressure: Float = 100f,
+    var sizeLightPressure: Float = 25f,
+    var opacityHeavyPressure: Float = 100f,
+    var opacityLightPressure: Float = 40f,
+    // Advanced -> Stamp
+    var spacing: Float = 12f,
+    var roundness: Float = 100f,
+    var rotation: Float = 0f,
+    // Advanced -> Nib
+    var hardness: Float = 85f,
+    var grainStrength: Float = 0f,
+    // Advanced -> Randomness
+    var sizeJitter: Float = 0f,
+    var opacityJitter: Float = 0f,
+    var scatterJitter: Float = 0f,
+    // Factory defaults for Reset button
+    val defType: SketchBrushType = brushType,
+    val defSize: Float = size,
+    val defOpacity: Float = opacity,
+    val defHardness: Float = hardness,
+    val defSpacing: Float = spacing,
+    val defRoundness: Float = roundness,
+    val defGrain: Float = grainStrength
+) {
+    fun resetToDefault() {
+        brushType = defType
+        size = defSize
+        opacity = defOpacity
+        sizeHeavyPressure = 100f
+        sizeLightPressure = 25f
+        opacityHeavyPressure = 100f
+        opacityLightPressure = 40f
+        spacing = defSpacing
+        roundness = defRoundness
+        rotation = 0f
+        hardness = defHardness
+        grainStrength = defGrain
+        sizeJitter = 0f
+        opacityJitter = 0f
+        scatterJitter = 0f
+    }
+}
+
+data class SketchBrushSet(
+    val id: String,
+    var name: String,
+    var isPinned: Boolean = false,
+    val brushes: MutableList<SketchBrushItem> = mutableListOf()
 )
+
+class ColorStudioState {
+    var hue: Float = 0f          // 0..360
+    var saturation: Float = 0.5f // 0..1
+    var lightness: Float = 0.0f  // 0..1
+    var currentColor: Int = Color.BLACK
+    var previousColor: Int = Color.BLACK
+    var isColorlessEraser: Boolean = false
+    var isEyedropperActive: Boolean = false
+    var topTabIndex: Int = 0     // 0 = Wheel, 1 = Swatch Grid, 2 = Image Picker
+    var bottomModeIndex: Int = 0 // 0 = HSL, 1 = RGB, 2 = Swatches, 3 = Shuffle, 4 = Tonal Strip
+    var harmonyMode: Int = 0     // 0 = Complementary, 1 = Triadic, 2 = Analogous, 3 = Split-Comp
+
+    val colorHistory = mutableListOf(
+        Color.rgb(18, 22, 238),
+        Color.rgb(255, 255, 255),
+        Color.rgb(0, 0, 0),
+        Color.rgb(14, 150, 238),
+        Color.rgb(0, 200, 255),
+        Color.rgb(65, 18, 255),
+        Color.rgb(235, 18, 18),
+        Color.rgb(112, 112, 112),
+        Color.rgb(72, 110, 0)
+    )
+
+    fun syncColorFromHsl() {
+        currentColor = hslToColor(hue, saturation, lightness)
+        isColorlessEraser = false
+    }
+
+    fun setFromColorInt(c: Int, recordPrevious: Boolean = false) {
+        if (recordPrevious) previousColor = currentColor
+        currentColor = Color.rgb(Color.red(c), Color.green(c), Color.blue(c))
+        val hsl = colorToHsl(currentColor)
+        hue = hsl[0]
+        saturation = hsl[1]
+        lightness = hsl[2]
+        isColorlessEraser = false
+    }
+
+    fun pushToHistory(c: Int) {
+        val opaque = Color.rgb(Color.red(c), Color.green(c), Color.blue(c))
+        colorHistory.remove(opaque)
+        colorHistory.add(0, opaque)
+        while (colorHistory.size > 9) {
+            colorHistory.removeAt(colorHistory.lastIndex)
+        }
+    }
+
+    fun computeHarmonyStrip(): List<Int> {
+        val out = mutableListOf<Int>()
+        when (harmonyMode % 4) {
+            0 -> { // Complementary shades
+                for (i in 0..5) {
+                    val h = if (i < 3) hue else (hue + 180f) % 360f
+                    val l = (0.25f + (i % 3) * 0.25f).coerceIn(0.08f, 0.92f)
+                    out.add(hslToColor(h, saturation.coerceAtLeast(0.35f), l))
+                }
+            }
+            1 -> { // Triadic
+                for (i in 0..5) {
+                    val h = (hue + (i / 2) * 120f) % 360f
+                    val l = if (i % 2 == 0) 0.42f else 0.68f
+                    out.add(hslToColor(h, saturation.coerceAtLeast(0.5f), l))
+                }
+            }
+            2 -> { // Analogous
+                for (i in 0..5) {
+                    val h = (hue - 50f + i * 20f + 360f) % 360f
+                    out.add(hslToColor(h, saturation.coerceAtLeast(0.45f), lightness.coerceIn(0.25f, 0.75f)))
+                }
+            }
+            else -> { // Split-Complementary
+                val angles = floatArrayOf(0f, 15f, 150f, 180f, 210f, 345f)
+                for (a in angles) {
+                    out.add(hslToColor((hue + a) % 360f, saturation.coerceAtLeast(0.5f), 0.52f))
+                }
+            }
+        }
+        return out
+    }
+
+    companion object {
+        fun hslToColor(h: Float, s: Float, l: Float): Int {
+            val c = (1f - abs(2f * l - 1f)) * s
+            val x = c * (1f - abs((h / 60f) % 2f - 1f))
+            val m = l - c / 2f
+            val r1: Float
+            val g1: Float
+            val b1: Float
+            when {
+                h < 60f -> { r1 = c; g1 = x; b1 = 0f }
+                h < 120f -> { r1 = x; g1 = c; b1 = 0f }
+                h < 180f -> { r1 = 0f; g1 = c; b1 = x }
+                h < 240f -> { r1 = 0f; g1 = x; b1 = c }
+                h < 300f -> { r1 = x; g1 = 0f; b1 = c }
+                else -> { r1 = c; g1 = 0f; b1 = x }
+            }
+            val r = ((r1 + m) * 255f).roundToInt().coerceIn(0, 255)
+            val g = ((g1 + m) * 255f).roundToInt().coerceIn(0, 255)
+            val b = ((b1 + m) * 255f).roundToInt().coerceIn(0, 255)
+            return Color.rgb(r, g, b)
+        }
+
+        fun colorToHsl(color: Int): FloatArray {
+            val r = Color.red(color) / 255f
+            val g = Color.green(color) / 255f
+            val b = Color.blue(color) / 255f
+            val maxC = maxOf(r, g, b)
+            val minC = minOf(r, g, b)
+            val d = maxC - minC
+            val l = (maxC + minC) * 0.5f
+            var h = 0f
+            var s = 0f
+            if (d > 0.0001f) {
+                s = d / (1f - abs(2f * l - 1f)).coerceAtLeast(0.0001f)
+                h = when (maxC) {
+                    r -> 60f * (((g - b) / d) % 6f)
+                    g -> 60f * (((b - r) / d) + 2f)
+                    else -> 60f * (((r - g) / d) + 4f)
+                }
+                if (h < 0f) h += 360f
+            }
+            return floatArrayOf(h.coerceIn(0f, 360f), s.coerceIn(0f, 1f), l.coerceIn(0f, 1f))
+        }
+    }
+}
+
+object DefaultBrushCatalog {
+    fun createDefaultSets(): MutableList<SketchBrushSet> {
+        val basicBrushes = mutableListOf(
+            SketchBrushItem("b1", "Primary Pencil", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 8f, 85f, hardness = 65f, grainStrength = 35f),
+            SketchBrushItem("b2", "2B Pencil", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 12f, 90f, hardness = 60f, grainStrength = 40f),
+            SketchBrushItem("b3", "4B Soft Pencil", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 18f, 92f, hardness = 55f, grainStrength = 45f),
+            SketchBrushItem("b4", "6B Shading Pencil", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 26f, 80f, hardness = 45f, grainStrength = 50f),
+            SketchBrushItem("b5", "HB Technical Pencil", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 5f, 95f, hardness = 85f, grainStrength = 20f),
+            SketchBrushItem("b6", "Sketching Pencil", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 14f, 75f, hardness = 50f, grainStrength = 38f),
+            SketchBrushItem("b7", "Drawing Pencil", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 16f, 88f, hardness = 62f, grainStrength = 30f),
+            SketchBrushItem("b8", "Fine Art Pencil", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 10f, 85f, hardness = 70f, grainStrength = 28f),
+            SketchBrushItem("b9", "Hard Eraser", BrushIconStyle.HARD_ERASER, SketchBrushType.ERASER, 36f, 100f, hardness = 98f),
+            SketchBrushItem("b10", "Soft Eraser", BrushIconStyle.SOFT_ERASER, SketchBrushType.ERASER, 54f, 65f, hardness = 25f),
+            SketchBrushItem("b11", "Chisel Marker", BrushIconStyle.CHISEL_MARKER, SketchBrushType.MARKER, 42f, 70f, roundness = 28f, rotation = -35f, hardness = 90f),
+            SketchBrushItem("b12", "Fine Airbrush", BrushIconStyle.AIRBRUSH, SketchBrushType.STANDARD, 65f, 45f, hardness = 12f, spacing = 8f),
+            SketchBrushItem("b13", "Soft Airbrush", BrushIconStyle.AIRBRUSH, SketchBrushType.STANDARD, 120f, 35f, hardness = 8f, spacing = 8f),
+            SketchBrushItem("b14", "Technical Pen", BrushIconStyle.TECHNICAL_PEN, SketchBrushType.STANDARD, 7f, 100f, hardness = 98f, spacing = 5f),
+            SketchBrushItem("b15", "Duplicate", BrushIconStyle.TECHNICAL_PEN, SketchBrushType.STANDARD, 28f, 100f, hardness = 95f, spacing = 6f),
+            SketchBrushItem("b16", "Tattoo Inker", BrushIconStyle.DIAMOND_SHADER, SketchBrushType.STANDARD, 16f, 100f, hardness = 92f),
+            SketchBrushItem("b17", "Fountain Pen", BrushIconStyle.FOUNTAIN_PEN, SketchBrushType.STANDARD, 15f, 100f, hardness = 96f, roundness = 45f, rotation = -30f),
+            SketchBrushItem("b18", "Calligraphy Nib", BrushIconStyle.FOUNTAIN_PEN, SketchBrushType.STANDARD, 24f, 100f, hardness = 95f, roundness = 22f, rotation = -40f),
+            SketchBrushItem("b19", "Watercolor Wash", BrushIconStyle.ROUND_BRUSH, SketchBrushType.MARKER, 52f, 48f, hardness = 35f),
+            SketchBrushItem("b20", "Felt Tip Pen", BrushIconStyle.FELT_PEN, SketchBrushType.STANDARD, 20f, 95f, hardness = 88f),
+            SketchBrushItem("b21", "Smudge Blender", BrushIconStyle.BLENDER_CONE, SketchBrushType.SMUDGE, 44f, 80f, hardness = 40f),
+            SketchBrushItem("b22", "Flat Marker", BrushIconStyle.CHISEL_MARKER, SketchBrushType.MARKER, 50f, 60f, roundness = 25f, rotation = -25f),
+            SketchBrushItem("b23", "Brush Marker", BrushIconStyle.CHISEL_MARKER, SketchBrushType.MARKER, 38f, 75f, roundness = 55f, rotation = -35f),
+            SketchBrushItem("b24", "Pastel Block", BrushIconStyle.PASTEL_BLOCK, SketchBrushType.STANDARD, 46f, 82f, hardness = 50f, grainStrength = 65f),
+            SketchBrushItem("b25", "Charcoal Stick", BrushIconStyle.CHARCOAL_STICK, SketchBrushType.STANDARD, 40f, 88f, hardness = 45f, grainStrength = 72f),
+            SketchBrushItem("b26", "Synthetic Flat", BrushIconStyle.FLAT_BRISTLE, SketchBrushType.STANDARD, 48f, 90f, roundness = 35f, grainStrength = 30f),
+            SketchBrushItem("b27", "Coarse Bristle", BrushIconStyle.FLAT_BRISTLE, SketchBrushType.STANDARD, 52f, 85f, grainStrength = 55f),
+            SketchBrushItem("b28", "Glaze Brush", BrushIconStyle.FLAT_BRISTLE, SketchBrushType.MARKER, 64f, 40f, hardness = 50f),
+            SketchBrushItem("b29", "Fan Brush", BrushIconStyle.FAN_BRUSH, SketchBrushType.STANDARD, 60f, 75f, roundness = 30f, grainStrength = 60f)
+        )
+
+        val textureBrushes = mutableListOf(
+            SketchBrushItem("t1", "Textured Pencil", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 32f, 90f, hardness = 65f, grainStrength = 55f),
+            SketchBrushItem("t2", "Grain Shader", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 48f, 85f, hardness = 55f, grainStrength = 70f),
+            SketchBrushItem("t3", "Rough Graphite", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 36f, 88f, hardness = 60f, grainStrength = 65f),
+            SketchBrushItem("t4", "Duplicate", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 180.3f, 100f, hardness = 72f, grainStrength = 62f),
+            SketchBrushItem("t5", "Canvas Weave", BrushIconStyle.WOOD_PENCIL, SketchBrushType.STANDARD, 54f, 82f, hardness = 50f, grainStrength = 78f),
+            SketchBrushItem("t6", "Neon Fractal", BrushIconStyle.TEXTURE_FRACTAL, SketchBrushType.GLOW, 75f, 90f, hardness = 35f, grainStrength = 60f),
+            SketchBrushItem("t7", "Crosshatch Stamp", BrushIconStyle.TEXTURE_HATCH, SketchBrushType.STANDARD, 68f, 85f, spacing = 22f, grainStrength = 80f),
+            SketchBrushItem("t8", "Frost Crystal", BrushIconStyle.TEXTURE_FROST, SketchBrushType.STANDARD, 72f, 88f, spacing = 28f, sizeJitter = 25f, grainStrength = 75f),
+            SketchBrushItem("t9", "Radial Burst", BrushIconStyle.TEXTURE_SPLATTER, SketchBrushType.STANDARD, 80f, 92f, spacing = 30f, scatterJitter = 20f, grainStrength = 70f),
+            SketchBrushItem("t10", "Dark Nebula", BrushIconStyle.TEXTURE_FRACTAL, SketchBrushType.GLOW, 90f, 78f, hardness = 25f, grainStrength = 65f),
+            SketchBrushItem("t11", "Starlight Glow", BrushIconStyle.TEXTURE_FRACTAL, SketchBrushType.GLOW, 64f, 95f, hardness = 30f),
+            SketchBrushItem("t12", "Ribbon Track", BrushIconStyle.CHISEL_MARKER, SketchBrushType.MARKER, 45f, 90f, roundness = 20f, grainStrength = 50f),
+            SketchBrushItem("t13", "Organic Flora", BrushIconStyle.TEXTURE_FROST, SketchBrushType.STANDARD, 70f, 85f, scatterJitter = 18f, grainStrength = 65f),
+            SketchBrushItem("t14", "Moss & Vine", BrushIconStyle.TEXTURE_FROST, SketchBrushType.STANDARD, 64f, 88f, sizeJitter = 30f, grainStrength = 72f),
+            SketchBrushItem("t15", "Halftone Diagonal", BrushIconStyle.TEXTURE_NOISE, SketchBrushType.STANDARD, 58f, 95f, grainStrength = 85f),
+            SketchBrushItem("t16", "Stipple Noise", BrushIconStyle.TEXTURE_NOISE, SketchBrushType.STANDARD, 62f, 90f, spacing = 18f, grainStrength = 90f),
+            SketchBrushItem("t17", "Lace Pattern", BrushIconStyle.TEXTURE_HATCH, SketchBrushType.STANDARD, 66f, 85f, grainStrength = 75f),
+            SketchBrushItem("t18", "Cyber Matrix Grid", BrushIconStyle.TEXTURE_GRID, SketchBrushType.GLOW, 74f, 92f, spacing = 20f, grainStrength = 80f),
+            SketchBrushItem("t19", "Soft Target Stamp", BrushIconStyle.TEXTURE_SPLATTER, SketchBrushType.STANDARD, 52f, 75f, spacing = 35f),
+            SketchBrushItem("t20", "Ring Stamp", BrushIconStyle.TEXTURE_SPLATTER, SketchBrushType.STANDARD, 56f, 80f, spacing = 35f)
+        )
+
+        return mutableListOf(
+            SketchBrushSet("set_basic", "Basic", isPinned = true, brushes = basicBrushes),
+            SketchBrushSet("set_overlay", "overlay texture", isPinned = false, brushes = textureBrushes)
+        )
+    }
+}
 
 data class CanvasPreset(
     val id: String,
@@ -62,10 +348,6 @@ class SketchProjectState(
     private val undoStack = ArrayDeque<Bitmap>()
     private val redoStack = ArrayDeque<Bitmap>()
 
-    /**
-     * Allocates the project canvas bitmap at exact 1:1 pixel dimensions (supports 4K+)
-     * with a safe fallback only if the device GPU/RAM limit is exceeded.
-     */
     fun ensureCanvasBitmap(): Bitmap {
         val targetW = width.coerceIn(1, 8192)
         val targetH = height.coerceIn(1, 8192)
@@ -91,7 +373,6 @@ class SketchProjectState(
         try {
             val copy = current.copy(Bitmap.Config.ARGB_8888, true)
             undoStack.addLast(copy)
-            // Dynamically cap undo history to ~160MB total to support 4K canvases without OOM
             val bytesPerBmp = (current.width.toLong() * current.height.toLong() * 4L).coerceAtLeast(1L)
             val maxSteps = (160_000_000L / bytesPerBmp).toInt().coerceIn(3, 18)
             while (undoStack.size > maxSteps) {
@@ -148,9 +429,7 @@ class SketchProjectState(
     companion object {
         private var untitledCounter = 1
 
-        fun nextDefaultName(): String {
-            return "Untitled-${untitledCounter++}"
-        }
+        fun nextDefaultName(): String = "Untitled-${untitledCounter++}"
 
         fun calculateMaxLayers(w: Int, h: Int): Int {
             if (w <= 0 || h <= 0) return 0
