@@ -58,7 +58,6 @@ class MainActivity : AppCompatActivity(), SketchWorkspaceView.HostCallbacks {
             )
         )
 
-        // True Inline EditText positioned directly inside the tapped box (Zero popup dialogs)
         inlineEditText = EditText(this).apply {
             visibility = View.GONE
             background = null
@@ -206,18 +205,26 @@ class MainActivity : AppCompatActivity(), SketchWorkspaceView.HostCallbacks {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        if (workspaceView.isSavingInProgress) return
         if (workspaceView.activeInlineField != InlineEditField.NONE) {
             workspaceView.closeInlineEditor()
             return
         }
         if (workspaceView.popupState != TopPopupState.NONE) {
+            if ((workspaceView.popupState == TopPopupState.BRUSH_MENU || workspaceView.popupState == TopPopupState.COLOR_MENU) &&
+                workspaceView.brushAndColorModal.subOverlay != BrushSubOverlay.NONE
+            ) {
+                workspaceView.brushAndColorModal.subOverlay = BrushSubOverlay.NONE
+                workspaceView.invalidate()
+                return
+            }
             workspaceView.popupState = when (workspaceView.popupState) {
                 TopPopupState.EDIT_PRESET -> TopPopupState.NEW_SKETCH
                 TopPopupState.EXPORT_AS_MENU, TopPopupState.SHARE_AS_MENU -> TopPopupState.SHARE_EXPORT_MAIN
                 TopPopupState.NEW_SKETCH, TopPopupState.SAVE_MENU,
                 TopPopupState.SHARE_EXPORT_MAIN, TopPopupState.MOD_MENU -> TopPopupState.BUTTON1_MAIN
-                TopPopupState.BUTTON1_MAIN, TopPopupState.BRUSH_MENU -> TopPopupState.NONE
-                TopPopupState.NONE -> TopPopupState.NONE
+                TopPopupState.BUTTON1_MAIN, TopPopupState.BRUSH_MENU, TopPopupState.COLOR_MENU -> TopPopupState.NONE
+                else -> TopPopupState.NONE
             }
             workspaceView.invalidate()
             return

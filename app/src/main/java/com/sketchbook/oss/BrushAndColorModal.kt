@@ -1776,6 +1776,7 @@ class BrushAndColorModal(private val hostView: SketchWorkspaceView) {
      */
     fun drawRealisticBrushIcon(c: Canvas, box: RectF, style: BrushIconStyle, sx: Float) {
         val cx = box.centerX()
+        val cy = box.centerY()
         val top = box.top
         val bot = box.bottom
         val w = box.width()
