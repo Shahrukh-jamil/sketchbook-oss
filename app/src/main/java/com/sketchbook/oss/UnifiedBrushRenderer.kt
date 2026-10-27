@@ -394,105 +394,135 @@ object UnifiedBrushRenderer {
         val clipRect = Rect()
         val hasClip = canvas.getClipBounds(clipRect) && clipRect.width() > 0 && clipRect.height() > 0
 
-        var totalNodes = 0
-        for (idx in temporalStrokes.indices) {
-            totalNodes += temporalStrokes[idx].nodes.size
-        }
-        val stride = when {
-            totalNodes > 4200 -> 3
-            totalNodes > 2400 -> 2
-            else -> 1
-        }
-
         for (sIdx in temporalStrokes.indices) {
             val ts = temporalStrokes[sIdx]
             val nCount = ts.nodes.size
             if (nCount == 0) continue
+
+            if (hasClip) {
+                var minX = Float.POSITIVE_INFINITY; var minY = Float.POSITIVE_INFINITY
+                var maxX = Float.NEGATIVE_INFINITY; var maxY = Float.NEGATIVE_INFINITY
+                var maxR = 0f
+                for (i in 0 until nCount) {
+                    val nd = ts.nodes[i]
+                    if (nd.x < minX) minX = nd.x
+                    if (nd.x > maxX) maxX = nd.x
+                    if (nd.y < minY) minY = nd.y
+                    if (nd.y > maxY) maxY = nd.y
+                    if (nd.radius > maxR) maxR = nd.radius
+                }
+                val pad = maxR * 3.5f + ts.waveAmp + 28f
+                if (maxX + pad < clipRect.left || minX - pad > clipRect.right ||
+                    maxY + pad < clipRect.top || minY - pad > clipRect.bottom
+                ) continue
+            }
+
             ColorStudioState.colorToHslOut(ts.color, baseHsl)
 
             if (ts.vmCode.isNotEmpty()) {
                 val program = vmInstance.getCompiledProgram(ts.vmCode)
-                if (program.stmts.isEmpty()) continue
-                vmInstance.beginStroke(nCount)
+                if (program.bytecode.isEmpty()) continue
+                vmInstance.beginStroke(nCount, program)
 
-                var i = 0
-                while (i < nCount) {
+                for (i in 0 until nCount) {
                     val nd = ts.nodes[i]
-                    if (hasClip) {
-                        val pad = nd.radius * 3.2f + 24f
-                        if (nd.x + pad < clipRect.left || nd.x - pad > clipRect.right ||
-                            nd.y + pad < clipRect.top || nd.y - pad > clipRect.bottom
-                        ) {
-                            vmInstance.pushHistoryNode(nd.x, nd.y, nd.radius)
-                            i += stride
-                            continue
-                        }
-                    }
                     vmInstance.pushHistoryNode(nd.x, nd.y, nd.radius)
                     vmInstance.executeCompiledNode(
-                        program = program,
-                        canvas = canvas,
-                        x = nd.x,
-                        y = nd.y,
-                        nx = nd.nx,
-                        ny = nd.ny,
-                        tx = nd.tx,
-                        ty = nd.ty,
-                        tangentDeg = nd.tangentDeg,
-                        radius = nd.radius,
-                        pressure = nd.pressure,
-                        speed = 1f,
-                        dabIndex = nd.dabIndex,
-                        timeSec = timeSec,
-                        baseHue = baseHsl[0],
-                        baseSat = baseHsl[1],
-                        baseLit = baseHsl[2],
+                        program = program, canvas = canvas, gpuBatcher = null,
+                        x = nd.x, y = nd.y, nx = nd.nx, ny = nd.ny, tx = nd.tx, ty = nd.ty,
+                        tangentDeg = nd.tangentDeg, radius = nd.radius, pressure = nd.pressure,
+                        speed = 1f, dabIndex = nd.dabIndex, timeSec = timeSec,
+                        baseHue = baseHsl[0], baseSat = baseHsl[1], baseLit = baseHsl[2],
                         baseAlpha = (nd.alpha / 255f).coerceIn(0.02f, 1f),
-                        isErase = ts.isErase,
-                        deterministicRandom = true,
-                        syncHistoryPts = null,
-                        canvasBitmap = canvasBitmap,
-                        activeAgentsOut = null,
-                        fillPaint = localFillPaint,
-                        strokePaint = localStrokePaint,
-                        dstOutXfer = localDstOut
+                        isErase = ts.isErase, deterministicRandom = true,
+                        syncHistoryPts = null, canvasBitmap = canvasBitmap, activeAgentsOut = null,
+                        fillPaint = localFillPaint, strokePaint = localStrokePaint, dstOutXfer = localDstOut
                     )
-                    if (i < nCount - 1 && i + stride >= nCount) {
-                        i = nCount - 1
-                    } else {
-                        i += stride
-                    }
                 }
+                vmInstance.flushCanvasBatch(canvas, localStrokePaint, localDstOut)
                 continue
             }
 
             localFillPaint.shader = null
             localFillPaint.xfermode = if (ts.isErase) localDstOut else null
-            var i = 0
-            while (i < nCount) {
+            for (i in 0 until nCount) {
                 val nd = ts.nodes[i]
                 val wave = sin(timeSec * ts.speed + nd.phase) * ts.waveAmp
-                val animX = nd.x + nd.nx * wave
-                val animY = nd.y + nd.ny * wave
+                val animX = nd.x + nd.nx * wave; val animY = nd.y + nd.ny * wave
                 val pulse = 0.78f + 0.28f * sin(timeSec * (ts.speed * 1.3f) + nd.phase * 1.7f)
                 val curRad = (nd.radius * pulse).coerceAtLeast(1.5f)
-
                 val shiftedHue = (baseHsl[0] + sin(timeSec * 2f + nd.phase) * ts.hueShift + 360f) % 360f
                 val glowCol = ColorStudioState.hslToColor(shiftedHue, baseHsl[1].coerceAtLeast(0.75f), baseHsl[2].coerceIn(0.35f, 0.7f))
                 val rgb = glowCol and 0xFFFFFF
-
                 val aOuter = (nd.alpha * 0.14f).toInt().coerceIn(3, 75)
                 val aMid = (nd.alpha * 0.34f).toInt().coerceIn(6, 150)
                 localFillPaint.color = (aOuter shl 24) or rgb
                 canvas.drawCircle(animX, animY, curRad * 2.1f, localFillPaint)
                 localFillPaint.color = (aMid shl 24) or rgb
                 canvas.drawCircle(animX, animY, curRad * 1.25f, localFillPaint)
-
                 localFillPaint.color = (nd.alpha shl 24) or 0xFFFFFF
                 canvas.drawCircle(animX, animY, curRad * 0.42f, localFillPaint)
-                i += stride
             }
             localFillPaint.xfermode = null
         }
+    }
+
+    fun renderTemporalStrokesGpu(
+        gpuBatcher: GpuShapeBatcher,
+        temporalStrokes: List<TemporalAnimatedStroke>,
+        canvasBitmap: Bitmap?,
+        timeSec: Float,
+        vmInstance: BrushShaderVM
+    ) {
+        if (temporalStrokes.isEmpty()) return
+        val localFillPaint = vmInstance.localFillPaint
+        val localStrokePaint = vmInstance.localStrokePaint
+        val localDstOut = vmInstance.localDstOut
+        val baseHsl = FloatArray(3)
+
+        for (sIdx in temporalStrokes.indices) {
+            val ts = temporalStrokes[sIdx]
+            val nCount = ts.nodes.size
+            if (nCount == 0) continue
+
+            gpuBatcher.setEraseMode(ts.isErase)
+            ColorStudioState.colorToHslOut(ts.color, baseHsl)
+
+            if (ts.vmCode.isNotEmpty()) {
+                val program = vmInstance.getCompiledProgram(ts.vmCode)
+                if (program.bytecode.isEmpty()) continue
+                vmInstance.beginStroke(nCount, program)
+
+                for (i in 0 until nCount) {
+                    val nd = ts.nodes[i]
+                    vmInstance.pushHistoryNode(nd.x, nd.y, nd.radius)
+                    vmInstance.executeCompiledNode(
+                        program = program, canvas = null, gpuBatcher = gpuBatcher,
+                        x = nd.x, y = nd.y, nx = nd.nx, ny = nd.ny, tx = nd.tx, ty = nd.ty,
+                        tangentDeg = nd.tangentDeg, radius = nd.radius, pressure = nd.pressure,
+                        speed = 1f, dabIndex = nd.dabIndex, timeSec = timeSec,
+                        baseHue = baseHsl[0], baseSat = baseHsl[1], baseLit = baseHsl[2],
+                        baseAlpha = (nd.alpha / 255f).coerceIn(0.02f, 1f),
+                        isErase = ts.isErase, deterministicRandom = true,
+                        syncHistoryPts = null, canvasBitmap = canvasBitmap, activeAgentsOut = null,
+                        fillPaint = localFillPaint, strokePaint = localStrokePaint, dstOutXfer = localDstOut
+                    )
+                }
+                continue
+            }
+
+            for (i in 0 until nCount) {
+                val nd = ts.nodes[i]
+                val wave = sin(timeSec * ts.speed + nd.phase) * ts.waveAmp
+                val animX = nd.x + nd.nx * wave; val animY = nd.y + nd.ny * wave
+                val pulse = 0.78f + 0.28f * sin(timeSec * (ts.speed * 1.3f) + nd.phase * 1.7f)
+                val curRad = (nd.radius * pulse).coerceAtLeast(1.5f)
+                val shiftedHue = (baseHsl[0] + sin(timeSec * 2f + nd.phase) * ts.hueShift + 360f) % 360f
+                val glowCol = ColorStudioState.hslToColor(shiftedHue, baseHsl[1].coerceAtLeast(0.75f), baseHsl[2].coerceIn(0.35f, 0.7f))
+                gpuBatcher.addCircle(animX, animY, curRad * 2.2f, glowCol, (nd.alpha * 0.42f).toInt().coerceIn(8, 160), 0.55f)
+                gpuBatcher.addCircle(animX, animY, curRad * 0.42f, Color.WHITE, nd.alpha, 0.1f)
+            }
+        }
+        gpuBatcher.flush()
     }
 }
