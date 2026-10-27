@@ -275,10 +275,10 @@ class ColorStudioState {
             return Color.rgb(r, g, b)
         }
 
-        fun colorToHsl(color: Int): FloatArray {
-            val r = Color.red(color) / 255f
-            val g = Color.green(color) / 255f
-            val b = Color.blue(color) / 255f
+        fun colorToHslOut(color: Int, out: FloatArray) {
+            val r = ((color shr 16) and 0xFF) / 255f
+            val g = ((color shr 8) and 0xFF) / 255f
+            val b = (color and 0xFF) / 255f
             val maxC = maxOf(r, g, b)
             val minC = minOf(r, g, b)
             val d = maxC - minC
@@ -294,7 +294,15 @@ class ColorStudioState {
                 }
                 if (h < 0f) h += 360f
             }
-            return floatArrayOf(h.coerceIn(0f, 360f), s.coerceIn(0f, 1f), l.coerceIn(0f, 1f))
+            out[0] = h.coerceIn(0f, 360f)
+            out[1] = s.coerceIn(0f, 1f)
+            out[2] = l.coerceIn(0f, 1f)
+        }
+
+        fun colorToHsl(color: Int): FloatArray {
+            val out = FloatArray(3)
+            colorToHslOut(color, out)
+            return out
         }
     }
 }

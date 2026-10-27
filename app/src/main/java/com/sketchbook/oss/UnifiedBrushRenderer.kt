@@ -8,13 +8,12 @@ import android.graphics.PointF
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
-import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
@@ -39,13 +38,9 @@ object UnifiedBrushRenderer {
 
     private val dstOutXfer = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
     private val clearXfer = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+    private val reusableOvalRect = RectF()
+    private val reusableHsl = FloatArray(3)
 
-    /**
-     * Renders a single dab at (x, y) with the exact parameters of [brush].
-     * Used identically by both the Pinned Brush Preview and the live Canvas Stroke!
-     * When [isTransparentColor] is true, uses DST_OUT so the exact brush shape,
-     * opacity, airbrush softness, grain, and quirks act as an eraser!
-     */
     fun renderSingleDab(
         canvas: Canvas,
         brush: SketchBrushItem,
@@ -68,7 +63,6 @@ object UnifiedBrushRenderer {
         var rad = (brush.size * 0.5f * sizePressScale.coerceIn(0.10f, 1.5f)).coerceAtLeast(1.0f)
         var dabAlpha = ((brush.opacity / 100f) * opacPressScale.coerceIn(0.05f, 1.0f) * 255f).roundToInt().coerceIn(2, 255)
 
-        // Deterministic PRNG for preview (so preview doesn't flicker) vs live PRNG on canvas
         fun nextRand01(salt: Int): Float {
             return if (deterministicRandom) {
                 val h = ((dabIndex * 73856093) xor (salt * 19349663)) and 0x7FFFFFFF
@@ -81,7 +75,6 @@ object UnifiedBrushRenderer {
         var drawX = x
         var drawY = y
 
-        // 1. Randomness -> Scatter, Size Jitter, Opacity Jitter
         if (brush.scatterJitter > 0.5f) {
             val maxScatter = rad * (brush.scatterJitter / 38f)
             val ang = nextRand01(1) * (Math.PI.toFloat() * 2f)
@@ -98,7 +91,6 @@ object UnifiedBrushRenderer {
             dabAlpha = (dabAlpha * oFactor).roundToInt().coerceIn(2, 255)
         }
 
-        // Apply per-dab spacing density compensation so continuous low-spacing strokes don't over-saturate
         val spacingNorm = (brush.spacing / 100f).coerceIn(0.02f, 1f)
         val flowScale = if (brush.brushType == SketchBrushType.MARKER) {
             0.32f
@@ -116,13 +108,11 @@ object UnifiedBrushRenderer {
         val cg = if (isEraseMode) 0 else Color.green(baseColor)
         val cb = if (isEraseMode) 0 else Color.blue(baseColor)
 
-        
-        // Programmable Brush Shader VM Execution (when `code` parameter is defined in modParams!)
         val vmCode = brush.modParams["code"]
         if (!vmCode.isNullOrBlank()) {
-            val radAngle = Math.toRadians(tangentDeg.toDouble())
-            val tx = cos(radAngle).toFloat()
-            val ty = sin(radAngle).toFloat()
+            val radAngle = tangentDeg * 0.017453292f
+            val tx = cos(radAngle)
+            val ty = sin(radAngle)
             val nx = -ty
             val ny = tx
             val histList = procHistory ?: mutableListOf()
@@ -138,7 +128,7 @@ object UnifiedBrushRenderer {
                 histList.removeAt(0)
                 if (radList.isNotEmpty()) radList.removeAt(0)
             }
-            val hsl = ColorStudioState.colorToHsl(baseColor)
+            ColorStudioState.colorToHslOut(baseColor, reusableHsl)
             val timeNow = (System.nanoTime() / 1_000_000_000.0).toFloat()
             shaderVM.executeDabProgram(
                 code = vmCode,
@@ -155,9 +145,9 @@ object UnifiedBrushRenderer {
                 speed = 1f,
                 dabIndex = dabIndex,
                 timeSec = timeNow,
-                baseHue = hsl[0],
-                baseSat = hsl[1],
-                baseLit = hsl[2],
+                baseHue = reusableHsl[0],
+                baseSat = reusableHsl[1],
+                baseLit = reusableHsl[2],
                 baseAlpha = (dabAlpha / 255f).coerceIn(0.02f, 1f),
                 isErase = isEraseMode,
                 deterministicRandom = deterministicRandom,
@@ -172,7 +162,6 @@ object UnifiedBrushRenderer {
             return
         }
 
-        // 2. Mod Mode: Procedural Web
         if (brush.modMode == "procedural_web") {
             val reach = (brush.modParams["reach"]?.toFloatOrNull() ?: 135f) * (brush.size / 38f).coerceIn(0.35f, 3f)
             val branches = (brush.modParams["branches"]?.toIntOrNull() ?: 3).coerceIn(1, 8)
@@ -219,7 +208,6 @@ object UnifiedBrushRenderer {
             return
         }
 
-        // 3. Mod Mode: Custom Harmonic Lotus Nib (3-zone varying opacity & smoothness)
         if (brush.modMode == "custom_harmonic_nib") {
             val lobes = (brush.modParams["lobes"]?.toIntOrNull() ?: 5).coerceIn(3, 12)
             val coreOpac = (brush.modParams["core_opac"]?.toFloatOrNull() ?: 96f) / 100f
@@ -255,19 +243,20 @@ object UnifiedBrushRenderer {
                 canvas.save()
                 canvas.translate(px, py)
                 canvas.rotate(Math.toDegrees(aRad).toFloat())
-                canvas.drawOval(RectF(-rad * 0.46f, -rad * 0.22f * roundRatio, rad * 0.46f, rad * 0.22f * roundRatio), dabPaint)
+                reusableOvalRect.set(-rad * 0.46f, -rad * 0.22f * roundRatio, rad * 0.46f, rad * 0.22f * roundRatio)
+                canvas.drawOval(reusableOvalRect, dabPaint)
                 canvas.restore()
             }
 
             val coreA = (dabAlpha * coreOpac).toInt().coerceIn(12, 255)
             dabPaint.color = Color.argb(coreA, cr, cg, cb)
-            canvas.drawOval(RectF(-rad * 0.40f, -rad * 0.18f * roundRatio, rad * 0.40f, rad * 0.18f * roundRatio), dabPaint)
+            reusableOvalRect.set(-rad * 0.40f, -rad * 0.18f * roundRatio, rad * 0.40f, rad * 0.18f * roundRatio)
+            canvas.drawOval(reusableOvalRect, dabPaint)
             canvas.restore()
             dabPaint.xfermode = null
             return
         }
 
-        // 4. Standard / Marker / Smudge / Glow / Eraser with full Nib Hardness, Grain & Stamp Roundness/Rotation
         when (brush.brushType) {
             SketchBrushType.SMUDGE -> {
                 var sCol = baseColor
@@ -292,7 +281,7 @@ object UnifiedBrushRenderer {
                 dabPaint.xfermode = activeXfer
                 val smAlpha = (dabAlpha * 0.55f).toInt().coerceIn(8, 190)
                 dabPaint.color = Color.WHITE
-            dabPaint.shader = RadialGradient(
+                dabPaint.shader = RadialGradient(
                     drawX, drawY, rad.coerceAtLeast(2f),
                     intArrayOf(Color.argb(smAlpha, sr, sg, sb), Color.argb(smAlpha / 2, sr, sg, sb), Color.TRANSPARENT),
                     floatArrayOf(0f, (brush.hardness / 100f).coerceIn(0.15f, 0.85f), 1f),
@@ -307,7 +296,7 @@ object UnifiedBrushRenderer {
                 dabPaint.xfermode = activeXfer
                 val outerR = rad * 1.9f
                 dabPaint.color = Color.WHITE
-            dabPaint.shader = RadialGradient(
+                dabPaint.shader = RadialGradient(
                     drawX, drawY, outerR.coerceAtLeast(2f),
                     intArrayOf(
                         Color.argb(dabAlpha, if (isEraseMode) 0 else 255, if (isEraseMode) 0 else 255, if (isEraseMode) 0 else 255),
@@ -323,17 +312,14 @@ object UnifiedBrushRenderer {
             }
 
             else -> {
-                // STANDARD, MARKER, and ERASER:
-                // Respects Hardness (soft airbrush gradient vs crisp edge), Roundness, Rotation, and Texture Grain!
                 dabPaint.xfermode = activeXfer
                 val hardNorm = (brush.hardness / 100f).coerceIn(0.02f, 1.0f)
 
                 if (hardNorm < 0.82f) {
-                    // True Soft Airbrush / Feathered Nib RadialGradient!
                     val coreStop = (hardNorm * 0.75f).coerceIn(0.02f, 0.75f)
                     val midAlpha = (effectiveAlpha * (0.35f + hardNorm * 0.45f)).toInt().coerceIn(2, 240)
                     dabPaint.color = Color.WHITE
-            dabPaint.shader = RadialGradient(
+                    dabPaint.shader = RadialGradient(
                         0f, 0f, rad.coerceAtLeast(1.5f),
                         intArrayOf(
                             Color.argb(effectiveAlpha, cr, cg, cb),
@@ -359,7 +345,6 @@ object UnifiedBrushRenderer {
                     canvas.drawCircle(0f, 0f, rad, dabPaint)
                 }
 
-                // If Nib -> Texture Grain > 0, overlay deterministic paper grain micro-stipples inside the dab
                 if (brush.grainStrength > 5f && rad >= 3f) {
                     val grainFactor = (brush.grainStrength / 100f).coerceIn(0.05f, 1f)
                     dabPaint.shader = null
@@ -388,15 +373,11 @@ object UnifiedBrushRenderer {
         canvas.translate(x, y)
         canvas.rotate(brush.rotation)
         val ry = rad * (brush.roundness / 100f).coerceIn(0.12f, 1f)
-        canvas.drawOval(RectF(-rad, -ry, rad, ry), dabPaint)
+        reusableOvalRect.set(-rad, -ry, rad, ry)
+        canvas.drawOval(reusableOvalRect, dabPaint)
         canvas.restore()
     }
 
-    /**
-     * Thread-safe renderer for persistent 60fps animated brush strokes (both VM-based `vm_anim`
-     * and procedural `time_animated` strokes). Used by live canvas drawing, static 1:1 PNG/TIFF
-     * saving, and high-bitrate MP4/GIF/WebM frame encoding.
-     */
     fun renderTemporalStrokes(
         canvas: Canvas,
         temporalStrokes: List<TemporalAnimatedStroke>,
@@ -405,29 +386,51 @@ object UnifiedBrushRenderer {
         vmInstance: BrushShaderVM = shaderVM
     ) {
         if (temporalStrokes.isEmpty()) return
-        val localFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-        val localStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
-        val localDstOut = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+        val localFillPaint = vmInstance.localFillPaint
+        val localStrokePaint = vmInstance.localStrokePaint
+        val localDstOut = vmInstance.localDstOut
+        val baseHsl = FloatArray(3)
 
-        for (ts in temporalStrokes) {
+        val clipRect = Rect()
+        val hasClip = canvas.getClipBounds(clipRect) && clipRect.width() > 0 && clipRect.height() > 0
+
+        var totalNodes = 0
+        for (idx in temporalStrokes.indices) {
+            totalNodes += temporalStrokes[idx].nodes.size
+        }
+        val stride = when {
+            totalNodes > 4200 -> 3
+            totalNodes > 2400 -> 2
+            else -> 1
+        }
+
+        for (sIdx in temporalStrokes.indices) {
+            val ts = temporalStrokes[sIdx]
             val nCount = ts.nodes.size
             if (nCount == 0) continue
-            val baseHsl = ColorStudioState.colorToHsl(ts.color)
+            ColorStudioState.colorToHslOut(ts.color, baseHsl)
 
             if (ts.vmCode.isNotEmpty()) {
-                val histPts = ArrayList<PointF>(nCount)
-                val histRads = ArrayList<Float>(nCount)
-                vmInstance.resetMemory()
-                for (i in 0 until nCount) {
+                val program = vmInstance.getCompiledProgram(ts.vmCode)
+                if (program.stmts.isEmpty()) continue
+                vmInstance.beginStroke(nCount)
+
+                var i = 0
+                while (i < nCount) {
                     val nd = ts.nodes[i]
-                    histPts.add(PointF(nd.x, nd.y))
-                    histRads.add(nd.radius)
-                    vmInstance.executeDabProgram(
-                        code = ts.vmCode,
+                    if (hasClip) {
+                        val pad = nd.radius * 3.2f + 24f
+                        if (nd.x + pad < clipRect.left || nd.x - pad > clipRect.right ||
+                            nd.y + pad < clipRect.top || nd.y - pad > clipRect.bottom
+                        ) {
+                            vmInstance.pushHistoryNode(nd.x, nd.y, nd.radius)
+                            i += stride
+                            continue
+                        }
+                    }
+                    vmInstance.pushHistoryNode(nd.x, nd.y, nd.radius)
+                    vmInstance.executeCompiledNode(
+                        program = program,
                         canvas = canvas,
                         x = nd.x,
                         y = nd.y,
@@ -447,19 +450,26 @@ object UnifiedBrushRenderer {
                         baseAlpha = (nd.alpha / 255f).coerceIn(0.02f, 1f),
                         isErase = ts.isErase,
                         deterministicRandom = true,
-                        historyPts = histPts,
-                        historyRadii = histRads,
+                        syncHistoryPts = null,
                         canvasBitmap = canvasBitmap,
                         activeAgentsOut = null,
                         fillPaint = localFillPaint,
                         strokePaint = localStrokePaint,
                         dstOutXfer = localDstOut
                     )
+                    if (i < nCount - 1 && i + stride >= nCount) {
+                        i = nCount - 1
+                    } else {
+                        i += stride
+                    }
                 }
                 continue
             }
 
-            for (i in 0 until nCount) {
+            localFillPaint.shader = null
+            localFillPaint.xfermode = if (ts.isErase) localDstOut else null
+            var i = 0
+            while (i < nCount) {
                 val nd = ts.nodes[i]
                 val wave = sin(timeSec * ts.speed + nd.phase) * ts.waveAmp
                 val animX = nd.x + nd.nx * wave
@@ -469,25 +479,20 @@ object UnifiedBrushRenderer {
 
                 val shiftedHue = (baseHsl[0] + sin(timeSec * 2f + nd.phase) * ts.hueShift + 360f) % 360f
                 val glowCol = ColorStudioState.hslToColor(shiftedHue, baseHsl[1].coerceAtLeast(0.75f), baseHsl[2].coerceIn(0.35f, 0.7f))
-                val gr = Color.red(glowCol); val gg = Color.green(glowCol); val gb = Color.blue(glowCol)
+                val rgb = glowCol and 0xFFFFFF
 
-                localFillPaint.color = Color.WHITE
-                localFillPaint.shader = RadialGradient(
-                    animX, animY, curRad * 2.2f,
-                    intArrayOf(
-                        Color.argb((nd.alpha * 0.42f).toInt().coerceIn(8, 160), gr, gg, gb),
-                        Color.argb((nd.alpha * 0.14f).toInt().coerceIn(4, 70), gr, gg, gb),
-                        Color.TRANSPARENT
-                    ),
-                    floatArrayOf(0f, 0.55f, 1f),
-                    Shader.TileMode.CLAMP
-                )
-                canvas.drawCircle(animX, animY, curRad * 2.2f, localFillPaint)
-                localFillPaint.shader = null
+                val aOuter = (nd.alpha * 0.14f).toInt().coerceIn(3, 75)
+                val aMid = (nd.alpha * 0.34f).toInt().coerceIn(6, 150)
+                localFillPaint.color = (aOuter shl 24) or rgb
+                canvas.drawCircle(animX, animY, curRad * 2.1f, localFillPaint)
+                localFillPaint.color = (aMid shl 24) or rgb
+                canvas.drawCircle(animX, animY, curRad * 1.25f, localFillPaint)
 
-                localFillPaint.color = Color.argb(nd.alpha, 255, 255, 255)
+                localFillPaint.color = (nd.alpha shl 24) or 0xFFFFFF
                 canvas.drawCircle(animX, animY, curRad * 0.42f, localFillPaint)
+                i += stride
             }
+            localFillPaint.xfermode = null
         }
     }
 }

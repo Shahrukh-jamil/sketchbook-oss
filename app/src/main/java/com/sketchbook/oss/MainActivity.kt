@@ -118,7 +118,11 @@ class MainActivity : AppCompatActivity(), SketchWorkspaceView.HostCallbacks {
         inlineEditText.setTextColor(textColor)
         inlineEditText.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx)
         inlineEditText.gravity = if (centered) Gravity.CENTER else (Gravity.START or Gravity.CENTER_VERTICAL)
-        inlineEditText.inputType = if (numeric) InputType.TYPE_CLASS_NUMBER else InputType.TYPE_CLASS_TEXT
+        inlineEditText.inputType = when {
+            field == InlineEditField.ANIM_DURATION_BOX -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            numeric -> InputType.TYPE_CLASS_NUMBER
+            else -> InputType.TYPE_CLASS_TEXT
+        }
         inlineEditText.setText(initialText)
         inlineEditText.setSelection(inlineEditText.text.length)
         inlineEditText.visibility = View.VISIBLE

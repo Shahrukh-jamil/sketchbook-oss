@@ -37,7 +37,8 @@ enum class InlineEditField {
     WIDTH_BOX,
     HEIGHT_BOX,
     PRESET_NAME_BOX,
-    PROJECT_NAME_BOX
+    PROJECT_NAME_BOX,
+    ANIM_DURATION_BOX
 }
 
 class SketchWorkspaceView(
@@ -81,8 +82,14 @@ class SketchWorkspaceView(
     var savingProgressFraction: Float = -1f
     private var savingAnimAngle: Float = 0f
 
-    // Eyedropper Mode
+    // Eyedropper Mode & Animated Export Duration
     private var isCanvasEyedropperActive: Boolean = false
+    var animExportDurationSec: Float = ProjectStorageManager.loadAnimDuration(context)
+    var animDurationInputStr: String = formatDurationClean(animExportDurationSec)
+
+    private fun formatDurationClean(sec: Float): String {
+        return if (sec % 1f == 0f) String.format("%.0f", sec) else String.format("%.1f", sec)
+    }
 
     var customWidthInput: Int = hwScreenSize.first
     var customHeightInput: Int = hwScreenSize.second
@@ -273,6 +280,14 @@ class SketchWorkspaceView(
                 project.name = newText
                 project.isDirty = true
             }
+            InlineEditField.ANIM_DURATION_BOX -> {
+                animDurationInputStr = newText
+                val parsed = newText.toFloatOrNull()
+                if (parsed != null && parsed > 0f) {
+                    animExportDurationSec = parsed.coerceIn(0.5f, 60f)
+                    ProjectStorageManager.saveAnimDuration(context, animExportDurationSec)
+                }
+            }
             InlineEditField.NONE -> {}
         }
         invalidate()
@@ -282,6 +297,12 @@ class SketchWorkspaceView(
         if (activeInlineField != InlineEditField.NONE) {
             if (activeInlineField == InlineEditField.PROJECT_NAME_BOX && project.name.isBlank()) {
                 project.name = "Untitled-1"
+            }
+            if (activeInlineField == InlineEditField.ANIM_DURATION_BOX) {
+                val parsed = animDurationInputStr.toFloatOrNull()
+                animExportDurationSec = (parsed ?: animExportDurationSec).coerceIn(0.5f, 60f)
+                animDurationInputStr = formatDurationClean(animExportDurationSec)
+                ProjectStorageManager.saveAnimDuration(context, animExportDurationSec)
             }
             activeInlineField = InlineEditField.NONE
             callbacks.onEndInlineEdit()
@@ -1059,20 +1080,85 @@ class SketchWorkspaceView(
         )
     }
 
-    private fun drawSaveMenu(canvas: Canvas, left: Float, top: Float, sx: Float, pal: ModUiPalette) {
-        val hasAnim = project.hasAnimatedStrokes()
-        val panelW = when {
-            hasAnim -> 736f * sx
-            project.isSavedOnce -> 688f * sx
-            else -> 580f * sx
+    private fun drawAnimDurationControlRow(
+        canvas: Canvas,
+        left: Float,
+        rowTop: Float,
+        right: Float,
+        rowH: Float,
+        sx: Float,
+        pal: ModUiPalette
+    ) {
+        val rowBot = rowTop + rowH
+        bgPaint.color = pal.popupHeaderBg
+        canvas.drawRect(left, rowTop, right, rowBot, bgPaint)
+
+        subTextPaint.color = pal.textPrimary
+        subTextPaint.textSize = 25f * sx
+        subTextPaint.isFakeBoldText = true
+        subTextPaint.textAlign = Paint.Align.LEFT
+        canvas.drawText("Duration:", left + 26f * sx, rowTop + rowH * 0.5f + 9f * sx, subTextPaint)
+        subTextPaint.isFakeBoldText = false
+
+        val presets = floatArrayOf(2f, 3.5f, 5f, 10f)
+        val chipH = rowH - 28f * sx
+        val chipTop = rowTop + 14f * sx
+        val chipBot = chipTop + chipH
+        var curX = left + 152f * sx
+        val chipW = 82f * sx
+        val chipGap = 10f * sx
+
+        for (pSec in presets) {
+            val cRect = RectF(curX, chipTop, curX + chipW, chipBot)
+            val isSelected = abs(animExportDurationSec - pSec) < 0.05f && activeInlineField != InlineEditField.ANIM_DURATION_BOX
+            bgPaint.color = if (isSelected) pal.accentColor else pal.cardBg
+            canvas.drawRect(cRect, bgPaint)
+            borderPaint.color = if (isSelected) pal.accentColor else pal.borderColor
+            borderPaint.strokeWidth = 2f * sx
+            canvas.drawRect(cRect, borderPaint)
+
+            textPaint.color = if (isSelected) Color.WHITE else pal.textPrimary
+            textPaint.textSize = 25f * sx
+            textPaint.isFakeBoldText = isSelected
+            textPaint.textAlign = Paint.Align.CENTER
+            val label = "${formatDurationClean(pSec)}s"
+            canvas.drawText(label, cRect.centerX(), cRect.centerY() + 9f * sx, textPaint)
+            textPaint.isFakeBoldText = false
+
+            hitZones.add(HitZone("SET_ANIM_DUR_PRESET", cRect, (pSec * 10f).roundToInt()))
+            curX += chipW + chipGap
         }
-        val headerH = 132f * sx
-        val nameRowH = 118f * sx
-        val itemRowH = 132f * sx
-        val sectionBarH = if (hasAnim) 52f * sx else 0f
+
+        val boxLeft = curX + 6f * sx
+        val boxRight = right - 22f * sx
+        if (boxRight > boxLeft + 50f * sx) {
+            val durBox = RectF(boxLeft, chipTop, boxRight, chipBot)
+            bgPaint.color = pal.inputBg
+            canvas.drawRect(durBox, bgPaint)
+            borderPaint.color = if (activeInlineField == InlineEditField.ANIM_DURATION_BOX) pal.accentColor else pal.borderColor
+            borderPaint.strokeWidth = 2.4f * sx
+            canvas.drawRect(durBox, borderPaint)
+
+            if (activeInlineField != InlineEditField.ANIM_DURATION_BOX) {
+                textPaint.color = pal.textPrimary
+                textPaint.textSize = 26f * sx
+                textPaint.textAlign = Paint.Align.CENTER
+                canvas.drawText("${formatDurationClean(animExportDurationSec)}s", durBox.centerX(), durBox.centerY() + 9f * sx, textPaint)
+            }
+            hitZones.add(HitZone("EDIT_ANIM_DURATION_BOX", durBox))
+        }
+    }
+
+    private fun drawSaveMenu(canvas: Canvas, left: Float, top: Float, sx: Float, pal: ModUiPalette) {
+        val panelW = 736f * sx
+        val headerH = 122f * sx
+        val nameRowH = 110f * sx
+        val itemRowH = 122f * sx
+        val sectionBarH = 48f * sx
+        val durRowH = 98f * sx
         val staticRows = if (project.isSavedOnce) 2 else 1
-        val animRows = if (hasAnim) 3 else 0
-        val totalH = headerH + nameRowH + itemRowH * (staticRows + animRows) + sectionBarH
+        val animRows = 3
+        val totalH = headerH + nameRowH + itemRowH * (staticRows + animRows) + sectionBarH + durRowH
         val right = left + panelW
         val bottom = top + totalH
         currentPopupBounds.set(left, top, right, bottom)
@@ -1095,7 +1181,7 @@ class SketchWorkspaceView(
         subTextPaint.textAlign = Paint.Align.LEFT
         canvas.drawText("Name:", left + 28f * sx, nameTop + nameRowH / 2f + 10f * sx, subTextPaint)
 
-        val fileBox = RectF(left + 132f * sx, nameTop + 20f * sx, right - 26f * sx, nameBot - 20f * sx)
+        val fileBox = RectF(left + 132f * sx, nameTop + 18f * sx, right - 26f * sx, nameBot - 18f * sx)
         bgPaint.color = pal.inputBg
         canvas.drawRect(fileBox, bgPaint)
         borderPaint.color = if (activeInlineField == InlineEditField.PROJECT_NAME_BOX) pal.accentColor else pal.borderColor
@@ -1126,18 +1212,14 @@ class SketchWorkspaceView(
         val r1Bot = r1Top + itemRowH
         SketchIcons.drawPictureSaveIcon(canvas, left + 58f * sx, r1Top + itemRowH / 2f, 52f * sx, isCopy = false, color = pal.iconTint, bgMask = pal.popupBg)
         textPaint.color = pal.textPrimary
-        textPaint.textSize = 36f * sx
+        textPaint.textSize = 35f * sx
         textPaint.textAlign = Paint.Align.LEFT
         textPaint.isFakeBoldText = false
-        if (hasAnim) {
-            canvas.drawText(ellipsize("Save current sketch (PNG)", textPaint, maxRowTextW), left + 132f * sx, r1Top + 56f * sx, textPaint)
-            subTextPaint.color = pal.textSecondary
-            subTextPaint.textSize = 23f * sx
-            subTextPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText(ellipsize("Static 1:1 PNG + SketchBook TIFF", subTextPaint, maxRowTextW), left + 132f * sx, r1Top + 98f * sx, subTextPaint)
-        } else {
-            canvas.drawText(ellipsize("Save current sketch", textPaint, maxRowTextW), left + 132f * sx, r1Top + itemRowH / 2f + 14f * sx, textPaint)
-        }
+        canvas.drawText(ellipsize("Save current sketch (PNG + TIFF)", textPaint, maxRowTextW), left + 132f * sx, r1Top + 52f * sx, textPaint)
+        subTextPaint.color = pal.textSecondary
+        subTextPaint.textSize = 22f * sx
+        subTextPaint.textAlign = Paint.Align.LEFT
+        canvas.drawText(ellipsize("Pictures/SketchBookOSS (.png) + Download/SketchBookOSS (.tif)", subTextPaint, maxRowTextW), left + 132f * sx, r1Top + 92f * sx, subTextPaint)
         hitZones.add(HitZone("ACTION_SAVE_CURRENT", RectF(left, r1Top, right, r1Bot)))
         curY = r1Bot
 
@@ -1149,65 +1231,69 @@ class SketchWorkspaceView(
 
             SketchIcons.drawPictureSaveIcon(canvas, left + 58f * sx, r2Top + itemRowH / 2f, 52f * sx, isCopy = true, color = pal.iconTint, bgMask = pal.popupBg)
             textPaint.color = pal.textPrimary
-            textPaint.textSize = 36f * sx
+            textPaint.textSize = 35f * sx
             textPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText(ellipsize("Save current sketch as a copy", textPaint, maxRowTextW), left + 132f * sx, r2Top + itemRowH / 2f + 14f * sx, textPaint)
+            canvas.drawText(ellipsize("Save current sketch as a copy", textPaint, maxRowTextW), left + 132f * sx, r2Top + itemRowH / 2f + 13f * sx, textPaint)
             hitZones.add(HitZone("ACTION_SAVE_COPY", RectF(left, r2Top, right, r2Bot)))
             curY = r2Bot
         }
 
-        if (hasAnim) {
+        borderPaint.color = pal.borderColor
+        canvas.drawLine(left, curY, right, curY, borderPaint)
+
+        val secTop = curY
+        val secBot = secTop + sectionBarH
+        bgPaint.color = pal.popupHeaderBg
+        canvas.drawRect(left, secTop, right, secBot, bgPaint)
+        subTextPaint.color = pal.accentColor
+        subTextPaint.textSize = 21f * sx
+        subTextPaint.isFakeBoldText = true
+        subTextPaint.textAlign = Paint.Align.LEFT
+        canvas.drawText("VIDEO & ANIMATED EXPORT (MP4 / GIF / WEBM)", left + 28f * sx, secTop + 32f * sx, subTextPaint)
+        subTextPaint.isFakeBoldText = false
+        curY = secBot
+
+        borderPaint.color = pal.borderColor
+        canvas.drawLine(left, curY, right, curY, borderPaint)
+        drawAnimDurationControlRow(canvas, left, curY, right, durRowH, sx, pal)
+        curY += durRowH
+
+        val durLabel = "${formatDurationClean(animExportDurationSec)}s"
+        data class AnimOption(val id: String, val badge: String, val title: String, val subtitle: String)
+        val animOptions = listOf(
+            AnimOption("ACTION_SAVE_ANIM_MP4", "MP4", "Save as MP4 ($durLabel • 60fps High Bitrate)", "H.264 28 Mbps • Duration: $durLabel • Movies/SketchBookOSS"),
+            AnimOption("ACTION_SAVE_ANIM_GIF", "GIF", "Save as Animated GIF ($durLabel • Loop)", "Infinite Loop GIF89a • Duration: $durLabel • Pictures/SketchBookOSS"),
+            AnimOption("ACTION_SAVE_ANIM_WEBM", "WEBM", "Save as WebM ($durLabel • 60fps High Bitrate)", "VP9/VP8 High Bitrate • Duration: $durLabel • Movies/SketchBookOSS")
+        )
+
+        for (opt in animOptions) {
             borderPaint.color = pal.borderColor
             canvas.drawLine(left, curY, right, curY, borderPaint)
-
-            val secTop = curY
-            val secBot = secTop + sectionBarH
-            bgPaint.color = pal.popupHeaderBg
-            canvas.drawRect(left, secTop, right, secBot, bgPaint)
-            subTextPaint.color = pal.accentColor
-            subTextPaint.textSize = 22f * sx
-            subTextPaint.isFakeBoldText = true
-            subTextPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText("ANIMATED ARTWORK EXPORT (HIGH BITRATE)", left + 28f * sx, secTop + 34f * sx, subTextPaint)
-            subTextPaint.isFakeBoldText = false
-            curY = secBot
-
-            data class AnimOption(val id: String, val badge: String, val title: String, val subtitle: String)
-            val animOptions = listOf(
-                AnimOption("ACTION_SAVE_ANIM_MP4", "MP4", "Save as MP4 (60fps High Bitrate)", "H.264 28 Mbps • Movies/SketchBookOSS"),
-                AnimOption("ACTION_SAVE_ANIM_GIF", "GIF", "Save as Animated GIF (Loop)", "Infinite Loop GIF89a • Pictures/SketchBookOSS"),
-                AnimOption("ACTION_SAVE_ANIM_WEBM", "WEBM", "Save as WebM (60fps High Bitrate)", "VP9/VP8 High Bitrate • Movies/SketchBookOSS")
+            val rTop = curY
+            val rBot = rTop + itemRowH
+            SketchIcons.drawFileFormatIcon(
+                c = canvas,
+                cx = left + 58f * sx,
+                cy = rTop + itemRowH / 2f,
+                size = 54f * sx,
+                label = opt.badge,
+                stacked = false,
+                starred = false,
+                color = pal.accentColor,
+                bgMask = pal.popupBg
             )
+            textPaint.color = pal.textPrimary
+            textPaint.textSize = 33f * sx
+            textPaint.textAlign = Paint.Align.LEFT
+            canvas.drawText(ellipsize(opt.title, textPaint, maxRowTextW), left + 132f * sx, rTop + 52f * sx, textPaint)
 
-            for (opt in animOptions) {
-                borderPaint.color = pal.borderColor
-                canvas.drawLine(left, curY, right, curY, borderPaint)
-                val rTop = curY
-                val rBot = rTop + itemRowH
-                SketchIcons.drawFileFormatIcon(
-                    c = canvas,
-                    cx = left + 58f * sx,
-                    cy = rTop + itemRowH / 2f,
-                    size = 54f * sx,
-                    label = opt.badge,
-                    stacked = false,
-                    starred = false,
-                    color = pal.accentColor,
-                    bgMask = pal.popupBg
-                )
-                textPaint.color = pal.textPrimary
-                textPaint.textSize = 34f * sx
-                textPaint.textAlign = Paint.Align.LEFT
-                canvas.drawText(ellipsize(opt.title, textPaint, maxRowTextW), left + 132f * sx, rTop + 56f * sx, textPaint)
+            subTextPaint.color = pal.textSecondary
+            subTextPaint.textSize = 22f * sx
+            subTextPaint.textAlign = Paint.Align.LEFT
+            canvas.drawText(ellipsize(opt.subtitle, subTextPaint, maxRowTextW), left + 132f * sx, rTop + 92f * sx, subTextPaint)
 
-                subTextPaint.color = pal.textSecondary
-                subTextPaint.textSize = 23f * sx
-                subTextPaint.textAlign = Paint.Align.LEFT
-                canvas.drawText(ellipsize(opt.subtitle, subTextPaint, maxRowTextW), left + 132f * sx, rTop + 98f * sx, subTextPaint)
-
-                hitZones.add(HitZone(opt.id, RectF(left, rTop, right, rBot)))
-                curY = rBot
-            }
+            hitZones.add(HitZone(opt.id, RectF(left, rTop, right, rBot)))
+            curY = rBot
         }
     }
 
@@ -1244,22 +1330,22 @@ class SketchWorkspaceView(
     }
 
     private fun drawFormatListMenu(canvas: Canvas, left: Float, top: Float, sx: Float, title: String, pal: ModUiPalette) {
-        val panelW = 660f * sx
-        val rowH = 132f * sx
-        val formats = mutableListOf(
-            Triple("TIF", "Sketchbook TIFF", true),
+        val panelW = 720f * sx
+        val rowH = 114f * sx
+        val durRowH = 96f * sx
+        val durLabel = "${formatDurationClean(animExportDurationSec)}s"
+        val formats = listOf(
+            Triple("TIF", "Sketchbook TIFF (Download/SketchBookOSS)", true),
             Triple("PSD", "PSD", true),
-            Triple("PNG", "PNG", false),
+            Triple("PNG", "PNG (Pictures/SketchBookOSS)", false),
             Triple("JPG", "JPG", false),
-            Triple("PDF", "PDF", false)
+            Triple("PDF", "PDF", false),
+            Triple("MP4", "MP4 Video ($durLabel • 60fps High Bitrate)", false),
+            Triple("GIF", "Animated GIF ($durLabel • Loop)", false),
+            Triple("WEBM", "WebM Video ($durLabel • 60fps High Bitrate)", false)
         )
-        if (project.hasAnimatedStrokes()) {
-            formats.add(Triple("MP4", "MP4 Video (High Bitrate)", false))
-            formats.add(Triple("GIF", "Animated GIF (Loop)", false))
-            formats.add(Triple("WEBM", "WebM Video (High Bitrate)", false))
-        }
         val right = left + panelW
-        val bottom = top + rowH * (1 + formats.size)
+        val bottom = top + rowH * (1 + formats.size) + durRowH
         currentPopupBounds.set(left, top, right, bottom)
 
         bgPaint.color = pal.popupBg
@@ -1267,15 +1353,21 @@ class SketchWorkspaceView(
 
         drawPopupHeader(canvas, left, top, panelW, rowH, sx, title, "BACK_TO_SHARE_MAIN", pal)
 
+        var curY = top + rowH
+        drawAnimDurationControlRow(canvas, left, curY, right, durRowH, sx, pal)
+        curY += durRowH
+        borderPaint.color = pal.borderColor
+        canvas.drawLine(left, curY, right, curY, borderPaint)
+
         for ((idx, fmt) in formats.withIndex()) {
-            val ry = top + rowH * (idx + 1)
+            val ry = curY + rowH * idx
             val cy = ry + rowH / 2f
             val isAnimFmt = fmt.first in listOf("MP4", "GIF", "WEBM")
             SketchIcons.drawFileFormatIcon(
                 c = canvas,
-                cx = left + 82f * sx,
+                cx = left + 76f * sx,
                 cy = cy,
-                size = 64f * sx,
+                size = 58f * sx,
                 label = fmt.first,
                 stacked = fmt.third,
                 starred = (fmt.first == "PDF"),
@@ -1283,9 +1375,9 @@ class SketchWorkspaceView(
                 bgMask = pal.popupBg
             )
             textPaint.color = pal.textPrimary
-            textPaint.textSize = 36f * sx
+            textPaint.textSize = 33f * sx
             textPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText(ellipsize(fmt.second, textPaint, panelW - 210f * sx), left + 180f * sx, cy + 14f * sx, textPaint)
+            canvas.drawText(ellipsize(fmt.second, textPaint, panelW - 196f * sx), left + 166f * sx, cy + 12f * sx, textPaint)
 
             hitZones.add(HitZone("EXPORT_FMT_${fmt.first}", RectF(left, ry, right, ry + rowH)))
 
@@ -1600,21 +1692,21 @@ class SketchWorkspaceView(
                     closeInlineEditor()
                     val cPt = screenToCanvasPoint(x, y)
                     val bmp = project.ensureCanvasBitmap()
-                    if (cPt.x in 0f..bmp.width.toFloat() && cPt.y in 0f..bmp.height.toFloat()) {
-                        isDrawingStroke = true
-                        smoothX = cPt.x
-                        smoothY = cPt.y
-                        lastCanvasPt.set(cPt.x, cPt.y)
-                        prevCanvasPt.set(cPt.x, cPt.y)
-                        lastStrokeSpeed = 0f
-                        // Initialize smudge pickup color under starting point
+                    isDrawingStroke = true
+                    smoothX = cPt.x
+                    smoothY = cPt.y
+                    lastCanvasPt.set(cPt.x, cPt.y)
+                    prevCanvasPt.set(cPt.x, cPt.y)
+                    lastStrokeSpeed = 0f
+                    val brushMargin = brushAndColorModal.selectedBrush().size * 0.65f + 4f
+                    if (isPointNearCanvas(cPt, bmp, brushMargin)) {
                         val sxInt = cPt.x.toInt().coerceIn(0, bmp.width - 1)
                         val syInt = cPt.y.toInt().coerceIn(0, bmp.height - 1)
                         val under = bmp.getPixel(sxInt, syInt)
                         smudgeCarryColor = if (Color.alpha(under) < 15) modEngine.resolveUiPalette().paperTint else under
                         pendingStrokeSamples.add(QueuedStrokeSample(PointF(cPt.x, cPt.y), event.pressure))
-                        return true
                     }
+                    return true
                 }
 
                 if (popupState == TopPopupState.NEW_SKETCH &&
@@ -1644,10 +1736,42 @@ class SketchWorkspaceView(
                 val dy = y - lastTouchY
                 lastTouchY = y
 
+                if (!isDrawingStroke && popupState == TopPopupState.NONE && maxPointersInGesture == 1 && y > topBarH) {
+                    closeInlineEditor()
+                    val startPt = screenToCanvasPoint(x, y)
+                    isDrawingStroke = true
+                    smoothX = startPt.x
+                    smoothY = startPt.y
+                    lastCanvasPt.set(startPt.x, startPt.y)
+                    prevCanvasPt.set(startPt.x, startPt.y)
+                    lastStrokeSpeed = 0f
+                }
+
                 if (isDrawingStroke && maxPointersInGesture == 1) {
                     val rawPt = screenToCanvasPoint(x, y)
-                    smoothX += (rawPt.x - smoothX) * 0.55f
-                    smoothY += (rawPt.y - smoothY) * 0.55f
+                    val bmp = project.ensureCanvasBitmap()
+                    val brushMargin = brushAndColorModal.selectedBrush().size * 0.65f + 4f
+
+                    if (!strokeCommittedToBitmap && pendingStrokeSamples.isEmpty()) {
+                        if (!doesSegmentTouchCanvas(lastCanvasPt, rawPt, bmp, brushMargin)) {
+                            smoothX = rawPt.x
+                            smoothY = rawPt.y
+                            prevCanvasPt.set(lastCanvasPt)
+                            lastCanvasPt.set(rawPt)
+                            return true
+                        }
+                        val sxInt = rawPt.x.toInt().coerceIn(0, bmp.width - 1)
+                        val syInt = rawPt.y.toInt().coerceIn(0, bmp.height - 1)
+                        val under = bmp.getPixel(sxInt, syInt)
+                        smudgeCarryColor = if (Color.alpha(under) < 15) modEngine.resolveUiPalette().paperTint else under
+                        smoothX = rawPt.x
+                        smoothY = rawPt.y
+                        pendingStrokeSamples.add(QueuedStrokeSample(PointF(lastCanvasPt.x, lastCanvasPt.y), event.pressure))
+                        pendingStrokeSamples.add(QueuedStrokeSample(PointF(rawPt.x, rawPt.y), event.pressure))
+                    } else {
+                        smoothX += (rawPt.x - smoothX) * 0.55f
+                        smoothY += (rawPt.y - smoothY) * 0.55f
+                    }
                     val curPt = PointF(smoothX, smoothY)
 
                     val elapsed = System.currentTimeMillis() - gestureDownTimeMs
@@ -1793,6 +1917,21 @@ class SketchWorkspaceView(
         pendingStrokeSamples.clear()
     }
 
+    private fun isPointNearCanvas(pt: PointF, bmp: android.graphics.Bitmap, margin: Float): Boolean {
+        return pt.x in -margin..(bmp.width.toFloat() + margin) &&
+               pt.y in -margin..(bmp.height.toFloat() + margin)
+    }
+
+    private fun doesSegmentTouchCanvas(p0: PointF, p1: PointF, bmp: android.graphics.Bitmap, margin: Float): Boolean {
+        val left = -margin
+        val top = -margin
+        val right = bmp.width.toFloat() + margin
+        val bottom = bmp.height.toFloat() + margin
+        if (max(p0.x, p1.x) < left || min(p0.x, p1.x) > right) return false
+        if (max(p0.y, p1.y) < top || min(p0.y, p1.y) > bottom) return false
+        return true
+    }
+
     private fun screenToCanvasPoint(sx: Float, sy: Float): PointF {
         val pts = floatArrayOf(sx, sy)
         inverseViewMatrix.mapPoints(pts)
@@ -1828,7 +1967,9 @@ class SketchWorkspaceView(
 
         val sizePressScale = (brush.sizeLightPressure + (brush.sizeHeavyPressure - brush.sizeLightPressure) * pNorm) / 100f
         val curRadius = (brush.size * 0.5f * sizePressScale.coerceIn(0.10f, 1.5f)).coerceAtLeast(1.0f)
-        val stepSpacingPx = max(1.0f, curRadius * 2f * (brush.spacing / 100f).coerceIn(0.03f, 2.5f))
+        val isAnimBrush = (brush.modMode == "time_animated" || brush.modMode == "vm_anim") && !colState.isColorlessEraser
+        val minSpacingFloor = if (isAnimBrush) 4.5f else 1.0f
+        val stepSpacingPx = max(minSpacingFloor, curRadius * 2f * (brush.spacing / 100f).coerceIn(if (isAnimBrush) 0.10f else 0.03f, 2.5f))
         val tangentDeg = Math.toDegrees(atan2((mid2Y - mid1Y).toDouble(), (mid2X - mid1X).toDouble())).toFloat()
         val smudgeHolder = intArrayOf(smudgeCarryColor)
 
@@ -1999,6 +2140,30 @@ class SketchWorkspaceView(
 
             "BACK_TO_SHARE_MAIN" -> {
                 popupState = TopPopupState.SHARE_EXPORT_MAIN
+                invalidate()
+            }
+
+            "SET_ANIM_DUR_PRESET" -> {
+                val newDur = (zone.payload / 10f).coerceIn(0.5f, 60f)
+                animExportDurationSec = newDur
+                animDurationInputStr = formatDurationClean(newDur)
+                ProjectStorageManager.saveAnimDuration(context, newDur)
+                invalidate()
+            }
+
+            "EDIT_ANIM_DURATION_BOX" -> {
+                activeInlineField = InlineEditField.ANIM_DURATION_BOX
+                animDurationInputStr = formatDurationClean(animExportDurationSec)
+                callbacks.onBeginInlineEdit(
+                    field = InlineEditField.ANIM_DURATION_BOX,
+                    bounds = zone.rect,
+                    initialText = animDurationInputStr,
+                    numeric = true,
+                    centered = true,
+                    textSizePx = 26f * sx,
+                    textColor = pal.textPrimary,
+                    bgColor = pal.inputBg
+                )
                 invalidate()
             }
 
@@ -2492,6 +2657,7 @@ class SketchWorkspaceView(
         val startTimeSec = (System.nanoTime() - animStartNano) / 1_000_000_000f
         val temporalSnapshot = project.temporalStrokes.map { it.deepCopy() }
 
+        val chosenDur = animExportDurationSec.coerceIn(0.5f, 60f)
         Thread {
             val res = ProjectStorageManager.saveAnimatedProjectToDevice(
                 context = appCtx,
@@ -2499,6 +2665,7 @@ class SketchWorkspaceView(
                 format = format,
                 paperColor = paperTint,
                 startTimeSec = startTimeSec,
+                durationSec = chosenDur,
                 temporalStrokesSnapshot = temporalSnapshot,
                 onProgress = { frac, statusText ->
                     savingProgressFraction = frac

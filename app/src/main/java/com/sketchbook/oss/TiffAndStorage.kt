@@ -26,6 +26,7 @@ import android.view.Surface
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -33,6 +34,8 @@ import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -107,10 +110,71 @@ object ProjectStorageManager {
             .apply()
     }
 
-    /**
-     * Composites paper background + static paint layer + persistent animated brush strokes
-     * onto [targetBmp] at [timeSec] using an isolated [BrushShaderVM] instance.
-     */
+    fun loadAnimDuration(context: Context): Float {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getFloat("anim_export_duration_sec", 3.5f).coerceIn(0.5f, 60f)
+    }
+
+    fun saveAnimDuration(context: Context, durationSec: Float) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putFloat("anim_export_duration_sec", durationSec.coerceIn(0.5f, 60f))
+            .apply()
+    }
+
+    private fun createPrebakedStaticBuffer(
+        targetW: Int,
+        targetH: Int,
+        layerBmp: Bitmap,
+        paperColor: Int
+    ): ByteBuffer {
+        val baseBmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+        val c = Canvas(baseBmp)
+        c.drawColor(paperColor)
+        if (layerBmp.width == targetW && layerBmp.height == targetH) {
+            c.drawBitmap(layerBmp, 0f, 0f, null)
+        } else {
+            c.drawBitmap(layerBmp, null, RectF(0f, 0f, targetW.toFloat(), targetH.toFloat()), filterPaint)
+        }
+        val buf = ByteBuffer.allocateDirect(targetW * targetH * 4)
+        baseBmp.copyPixelsToBuffer(buf)
+        buf.rewind()
+        baseBmp.recycle()
+        return buf
+    }
+
+    private fun renderFrameWithPrebakedBase(
+        targetBmp: Bitmap,
+        targetCanvas: Canvas,
+        prebakedBaseSlice: ByteBuffer?,
+        layerBmp: Bitmap,
+        temporalStrokes: List<TemporalAnimatedStroke>,
+        paperColor: Int,
+        timeSec: Float,
+        vm: BrushShaderVM
+    ) {
+        if (prebakedBaseSlice != null) {
+            prebakedBaseSlice.rewind()
+            targetBmp.copyPixelsFromBuffer(prebakedBaseSlice)
+            if (temporalStrokes.isNotEmpty()) {
+                val exactW = targetBmp.width
+                val exactH = targetBmp.height
+                if (exactW == layerBmp.width && exactH == layerBmp.height) {
+                    UnifiedBrushRenderer.renderTemporalStrokes(targetCanvas, temporalStrokes, layerBmp, timeSec, vm)
+                } else {
+                    targetCanvas.save()
+                    val sx = exactW.toFloat() / max(1, layerBmp.width).toFloat()
+                    val sy = exactH.toFloat() / max(1, layerBmp.height).toFloat()
+                    targetCanvas.scale(sx, sy)
+                    UnifiedBrushRenderer.renderTemporalStrokes(targetCanvas, temporalStrokes, layerBmp, timeSec, vm)
+                    targetCanvas.restore()
+                }
+            }
+        } else {
+            renderCompositeFrame(targetBmp, layerBmp, temporalStrokes, paperColor, timeSec, vm)
+        }
+    }
+
     fun renderCompositeFrame(
         targetBmp: Bitmap,
         layerBmp: Bitmap,
@@ -155,10 +219,6 @@ object ProjectStorageManager {
         }
     }
 
-    /**
-     * Saves the project at its exact native pixel dimensions (e.g. 3840x2160 or 4096x4096),
-     * rendering all static and animated brush strokes onto both the 1:1 PNG and SketchBook TIFF.
-     */
     fun saveProjectToDevice(
         context: Context,
         project: SketchProjectState,
@@ -183,7 +243,7 @@ object ProjectStorageManager {
             val vm = BrushShaderVM()
             renderCompositeFrame(outBmp, layerBmp, temporalStrokesSnapshot, paperColor, snapshotTimeSec, vm)
 
-            val savedLocation = saveImageToMediaStoreOrDisk(
+            val savedPngLocation = saveImageToMediaStoreOrDisk(
                 context = context,
                 bmp = outBmp,
                 baseName = finalName,
@@ -199,9 +259,10 @@ object ProjectStorageManager {
             FileOutputStream(tiffFile).use { fos ->
                 writeSketchbookTiff(outBmp, fos, exactW, exactH)
             }
+            val savedTiffLocation = saveTiffToPublicStorage(context, tiffFile, "$finalName.tif")
 
             outBmp.recycle()
-            Result.success("$savedLocation (${exactW}×${exactH})")
+            Result.success("$savedPngLocation + $savedTiffLocation")
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -232,7 +293,7 @@ object ProjectStorageManager {
                 "TIF", "TIFF" -> {
                     val tiffBytes = File(context.cacheDir, "export_${System.currentTimeMillis()}.tif")
                     FileOutputStream(tiffBytes).use { fos -> writeSketchbookTiff(outBmp, fos, exactW, exactH) }
-                    val resLoc = saveRawFileToPictures(context, tiffBytes, "$safeBase.tif", "image/tiff")
+                    val resLoc = saveTiffToPublicStorage(context, tiffBytes, "$safeBase.tif")
                     tiffBytes.delete()
                     resLoc
                 }
@@ -247,16 +308,13 @@ object ProjectStorageManager {
         }
     }
 
-    /**
-     * Exports animated artworks as High-Bitrate 60fps MP4 (H.264), High-Bitrate 60fps WebM (VP9/VP8),
-     * or Infinite-Looping Animated GIF89a.
-     */
     fun saveAnimatedProjectToDevice(
         context: Context,
         project: SketchProjectState,
         format: AnimatedExportFormat,
         paperColor: Int = Color.WHITE,
         startTimeSec: Float = 0f,
+        durationSec: Float = 3.5f,
         temporalStrokesSnapshot: List<TemporalAnimatedStroke> = project.temporalStrokes.map { it.deepCopy() },
         onProgress: (Float, String) -> Unit = { _, _ -> }
     ): Result<String> {
@@ -265,6 +323,7 @@ object ProjectStorageManager {
             val layerBmp = project.ensureCanvasBitmap()
             val srcW = project.width.coerceAtLeast(1)
             val srcH = project.height.coerceAtLeast(1)
+            val clampedDuration = durationSec.coerceIn(0.5f, 60f)
 
             when (format) {
                 AnimatedExportFormat.MP4_HIGH_BITRATE -> {
@@ -277,6 +336,7 @@ object ProjectStorageManager {
                         temporalStrokes = temporalStrokesSnapshot,
                         paperColor = paperColor,
                         startTimeSec = startTimeSec,
+                        durationSec = clampedDuration,
                         isWebm = false,
                         onProgress = onProgress
                     )
@@ -291,6 +351,7 @@ object ProjectStorageManager {
                         temporalStrokes = temporalStrokesSnapshot,
                         paperColor = paperColor,
                         startTimeSec = startTimeSec,
+                        durationSec = clampedDuration,
                         isWebm = true,
                         onProgress = onProgress
                     )
@@ -305,6 +366,7 @@ object ProjectStorageManager {
                         temporalStrokes = temporalStrokesSnapshot,
                         paperColor = paperColor,
                         startTimeSec = startTimeSec,
+                        durationSec = clampedDuration,
                         onProgress = onProgress
                     )
                 }
@@ -348,6 +410,16 @@ object ProjectStorageManager {
         return Pair(640, 640)
     }
 
+    private class VideoWorkerSlot(vidW: Int, vidH: Int, baseBuf: ByteBuffer?) {
+        val bmp: Bitmap = Bitmap.createBitmap(vidW, vidH, Bitmap.Config.ARGB_8888)
+        val canvas: Canvas = Canvas(bmp)
+        val vm: BrushShaderVM = BrushShaderVM()
+        val baseSlice: ByteBuffer? = baseBuf?.duplicate()
+        fun release() {
+            if (!bmp.isRecycled) bmp.recycle()
+        }
+    }
+
     private fun encodeHighBitrateVideo(
         context: Context,
         baseName: String,
@@ -357,6 +429,7 @@ object ProjectStorageManager {
         temporalStrokes: List<TemporalAnimatedStroke>,
         paperColor: Int,
         startTimeSec: Float,
+        durationSec: Float,
         isWebm: Boolean,
         onProgress: (Float, String) -> Unit
     ): Result<String> {
@@ -432,13 +505,14 @@ object ProjectStorageManager {
             if (endOfStream) {
                 try { enc.signalEndOfInputStream() } catch (_: Exception) {}
             }
+            val timeoutUs = if (endOfStream) 5_000L else 0L
             var eosRetries = 0
             while (true) {
-                val outStatus = enc.dequeueOutputBuffer(bufferInfo, 10_000L)
+                val outStatus = enc.dequeueOutputBuffer(bufferInfo, timeoutUs)
                 if (outStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
                     if (!endOfStream) break
                     eosRetries++
-                    if (eosRetries > 200) break
+                    if (eosRetries > 250) break
                 } else if (outStatus == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     if (!muxerStarted) {
                         trackIndex = muxer.addTrack(enc.outputFormat)
@@ -467,29 +541,67 @@ object ProjectStorageManager {
             }
         }
 
+        val warmupVm = BrushShaderVM()
+        for (ts in temporalStrokes) {
+            if (ts.vmCode.isNotEmpty()) warmupVm.getCompiledProgram(ts.vmCode)
+        }
+
+        val hasEraseTemporal = temporalStrokes.any { it.isErase }
+        val prebakedBase = if (!hasEraseTemporal) {
+            createPrebakedStaticBuffer(vidW, vidH, layerBmp, paperColor)
+        } else {
+            null
+        }
+
         val eglHelper = EglBitmapSurfaceRenderer(inputSurface, vidW, vidH)
-        val frameBmp = Bitmap.createBitmap(vidW, vidH, Bitmap.Config.ARGB_8888)
-        val vm = BrushShaderVM()
-        val durationSec = 3.5f
-        val totalFrames = (fps * durationSec).roundToInt().coerceAtLeast(30)
+        val numWorkers = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        val executor = Executors.newFixedThreadPool(numWorkers)
+        val slots = Array(numWorkers) { VideoWorkerSlot(vidW, vidH, prebakedBase) }
+
+        val totalFrames = (fps * durationSec).roundToInt().coerceAtLeast(15)
         val mbpsStr = String.format("%.0f Mbps", targetBitrate / 1_000_000f)
+        val durLabel = if (durationSec % 1f == 0f) String.format("%.0fs", durationSec) else String.format("%.1fs", durationSec)
 
         try {
-            for (f in 0 until totalFrames) {
-                val tSec = startTimeSec + f.toFloat() / fps.toFloat()
-                renderCompositeFrame(frameBmp, layerBmp, temporalStrokes, paperColor, tSec, vm)
-                val ptsNs = f.toLong() * 1_000_000_000L / fps.toLong()
-                eglHelper.drawBitmapFrame(frameBmp, ptsNs, isFirstFrame = (f == 0))
-                drainEncoder(endOfStream = false)
-
-                if (f % 4 == 0 || f == totalFrames - 1) {
-                    val frac = (f + 1).toFloat() / totalFrames.toFloat()
-                    onProgress(frac, "$mbpsStr • ${vidW}×${vidH} @ ${fps}fps (${(frac * 100).roundToInt()}%)")
+            var batchStart = 0
+            while (batchStart < totalFrames) {
+                val batchCount = min(numWorkers, totalFrames - batchStart)
+                val tasks = ArrayList<Callable<Unit>>(batchCount)
+                for (w in 0 until batchCount) {
+                    val frameIdx = batchStart + w
+                    val slot = slots[w]
+                    tasks.add(Callable {
+                        val tSec = startTimeSec + frameIdx.toFloat() / fps.toFloat()
+                        renderFrameWithPrebakedBase(
+                            targetBmp = slot.bmp,
+                            targetCanvas = slot.canvas,
+                            prebakedBaseSlice = slot.baseSlice,
+                            layerBmp = layerBmp,
+                            temporalStrokes = temporalStrokes,
+                            paperColor = paperColor,
+                            timeSec = tSec,
+                            vm = slot.vm
+                        )
+                    })
                 }
+                executor.invokeAll(tasks)
+
+                for (w in 0 until batchCount) {
+                    val f = batchStart + w
+                    val ptsNs = f.toLong() * 1_000_000_000L / fps.toLong()
+                    eglHelper.drawBitmapFrame(slots[w].bmp, ptsNs, isFirstFrame = (f == 0))
+                    drainEncoder(endOfStream = false)
+                }
+
+                val doneFrame = batchStart + batchCount
+                val frac = doneFrame.toFloat() / totalFrames.toFloat()
+                onProgress(frac, "$durLabel • $mbpsStr • ${vidW}×${vidH} @ ${fps}fps (${(frac * 100).roundToInt()}%)")
+                batchStart += batchCount
             }
             drainEncoder(endOfStream = true)
         } finally {
-            frameBmp.recycle()
+            executor.shutdownNow()
+            for (s in slots) s.release()
             eglHelper.release()
             try { enc.stop() } catch (_: Exception) {}
             try { enc.release() } catch (_: Exception) {}
@@ -502,13 +614,35 @@ object ProjectStorageManager {
 
         val savedPath = saveVideoToMediaStoreOrDisk(context, tempFile, "$baseName.$ext", outMime)
         tempFile.delete()
-        return Result.success("$savedPath (${vidW}×${vidH} ${fps}fps $mbpsStr)")
+        return Result.success("$savedPath ($durLabel ${vidW}×${vidH} ${fps}fps $mbpsStr)")
     }
 
-    /**
-     * Encodes an infinite-looping GIF89a with a 256-color 6x7x6+4 perceptual palette,
-     * 4x4 ordered Bayer dithering, and zero-allocation flat-table LZW compression.
-     */
+    private class GifWorkerSlot(gifW: Int, gifH: Int, baseBuf: ByteBuffer?) {
+        val bmp: Bitmap = Bitmap.createBitmap(gifW, gifH, Bitmap.Config.ARGB_8888)
+        val canvas: Canvas = Canvas(bmp)
+        val vm: BrushShaderVM = BrushShaderVM()
+        val baseSlice: ByteBuffer? = baseBuf?.duplicate()
+        val pixels: IntArray = IntArray(gifW * gifH)
+        val indices: ByteArray = ByteArray(gifW * gifH)
+        val lzwTable: IntArray = IntArray(4096 * 256)
+        var lzwGen: Int = 1
+        val subBlock: ByteArray = ByteArray(256)
+        val frameOut: ByteArrayOutputStream = ByteArrayOutputStream(max(4096, gifW * gifH / 3))
+
+        fun nextGeneration(): Int {
+            lzwGen++
+            if (lzwGen >= 0x7FFFF) {
+                lzwTable.fill(0)
+                lzwGen = 1
+            }
+            return lzwGen
+        }
+
+        fun release() {
+            if (!bmp.isRecycled) bmp.recycle()
+        }
+    }
+
     private fun encodeAnimatedGif(
         context: Context,
         baseName: String,
@@ -518,6 +652,7 @@ object ProjectStorageManager {
         temporalStrokes: List<TemporalAnimatedStroke>,
         paperColor: Int,
         startTimeSec: Float,
+        durationSec: Float,
         onProgress: (Float, String) -> Unit
     ): Result<String> {
         val maxGifDim = 640
@@ -526,16 +661,22 @@ object ProjectStorageManager {
         val gifH = (srcH * scale).roundToInt().coerceAtLeast(32)
 
         val fps = 20
-        val delayCs = 5 // 50ms per frame = 20fps
-        val totalFrames = 50 // 2.5s seamless loop
+        val delayCs = 5
+        val clampedGifDur = durationSec.coerceIn(0.5f, 30f)
+        val totalFrames = (fps * clampedGifDur).roundToInt().coerceIn(10, 600)
         val tempFile = File(context.cacheDir, "anim_gif_${System.currentTimeMillis()}.gif")
 
-        val frameBmp = Bitmap.createBitmap(gifW, gifH, Bitmap.Config.ARGB_8888)
-        val pixels = IntArray(gifW * gifH)
-        val indices = ByteArray(gifW * gifH)
-        val lzwTable = IntArray(4096 * 256)
-        val subBlock = ByteArray(256)
-        val vm = BrushShaderVM()
+        val warmupVm = BrushShaderVM()
+        for (ts in temporalStrokes) {
+            if (ts.vmCode.isNotEmpty()) warmupVm.getCompiledProgram(ts.vmCode)
+        }
+
+        val hasEraseTemporal = temporalStrokes.any { it.isErase }
+        val prebakedBase = if (!hasEraseTemporal) {
+            createPrebakedStaticBuffer(gifW, gifH, layerBmp, paperColor)
+        } else {
+            null
+        }
 
         val bayer4 = intArrayOf(
              0,  8,  2, 10,
@@ -544,149 +685,192 @@ object ProjectStorageManager {
             15,  7, 13,  5
         )
 
-        BufferedOutputStream(FileOutputStream(tempFile), 65536).use { out ->
-            out.write("GIF89a".toByteArray(Charsets.US_ASCII))
+        val numWorkers = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        val executor = Executors.newFixedThreadPool(numWorkers)
+        val slots = Array(numWorkers) { GifWorkerSlot(gifW, gifH, prebakedBase) }
 
-            out.write(gifW and 0xFF)
-            out.write((gifW shr 8) and 0xFF)
-            out.write(gifH and 0xFF)
-            out.write((gifH shr 8) and 0xFF)
-            out.write(0xF7)
-            out.write(0)
-            out.write(0)
+        try {
+            BufferedOutputStream(FileOutputStream(tempFile), 262144).use { out ->
+                out.write("GIF89a".toByteArray(Charsets.US_ASCII))
 
-            for (r in 0 until 6) {
-                val r8 = (r * 255) / 5
-                for (g in 0 until 7) {
-                    val g8 = (g * 255) / 6
-                    for (b in 0 until 6) {
-                        val b8 = (b * 255) / 5
-                        out.write(r8)
-                        out.write(g8)
-                        out.write(b8)
-                    }
-                }
-            }
-            for (gray in intArrayOf(36, 109, 182, 219)) {
-                out.write(gray)
-                out.write(gray)
-                out.write(gray)
-            }
-
-            out.write(byteArrayOf(0x21, 0xFF.toByte(), 0x0B))
-            out.write("NETSCAPE2.0".toByteArray(Charsets.US_ASCII))
-            out.write(byteArrayOf(0x03, 0x01, 0x00, 0x00, 0x00))
-
-            for (f in 0 until totalFrames) {
-                val tSec = startTimeSec + f.toFloat() / fps.toFloat()
-                renderCompositeFrame(frameBmp, layerBmp, temporalStrokes, paperColor, tSec, vm)
-                frameBmp.getPixels(pixels, 0, gifW, 0, 0, gifW, gifH)
-
-                var pIdx = 0
-                for (y in 0 until gifH) {
-                    val yRow = (y and 3) shl 2
-                    for (x in 0 until gifW) {
-                        val c = pixels[pIdx]
-                        val r = (c shr 16) and 0xFF
-                        val g = (c shr 8) and 0xFF
-                        val b = c and 0xFF
-                        val d = bayer4[yRow or (x and 3)] - 7
-                        val ri = ((r * 5 + d * 3 + 127) / 255).coerceIn(0, 5)
-                        val gi = ((g * 6 + d * 3 + 127) / 255).coerceIn(0, 6)
-                        val bi = ((b * 5 + d * 3 + 127) / 255).coerceIn(0, 5)
-                        indices[pIdx] = ((ri * 7 + gi) * 6 + bi).toByte()
-                        pIdx++
-                    }
-                }
-
-                out.write(0x21)
-                out.write(0xF9)
-                out.write(0x04)
-                out.write(0x04)
-                out.write(delayCs and 0xFF)
-                out.write((delayCs shr 8) and 0xFF)
-                out.write(0x00)
-                out.write(0x00)
-
-                out.write(0x2C)
-                out.write(0); out.write(0)
-                out.write(0); out.write(0)
-                out.write(gifW and 0xFF); out.write((gifW shr 8) and 0xFF)
-                out.write(gifH and 0xFF); out.write((gifH shr 8) and 0xFF)
-                out.write(0x00)
-
-                out.write(8)
-                var subLen = 0
-                var bitBuf = 0
-                var bitCnt = 0
-
-                fun emitCode(code: Int, size: Int) {
-                    bitBuf = bitBuf or (code shl bitCnt)
-                    bitCnt += size
-                    while (bitCnt >= 8) {
-                        subBlock[subLen++] = (bitBuf and 0xFF).toByte()
-                        bitBuf = bitBuf ushr 8
-                        bitCnt -= 8
-                        if (subLen == 255) {
-                            out.write(255)
-                            out.write(subBlock, 0, 255)
-                            subLen = 0
-                        }
-                    }
-                }
-
-                val clearCode = 256
-                val endCode = 257
-                var codeSize = 9
-                var nextCode = 258
-                lzwTable.fill(-1)
-
-                emitCode(clearCode, codeSize)
-                var prefix = indices[0].toInt() and 0xFF
-                val totalPx = indices.size
-                for (i in 1 until totalPx) {
-                    val k = indices[i].toInt() and 0xFF
-                    val tIdx = (prefix shl 8) or k
-                    val ent = lzwTable[tIdx]
-                    if (ent != -1) {
-                        prefix = ent
-                    } else {
-                        emitCode(prefix, codeSize)
-                        if (nextCode < 4096) {
-                            lzwTable[tIdx] = nextCode
-                            if (nextCode == (1 shl codeSize) && codeSize < 12) {
-                                codeSize++
-                            }
-                            nextCode++
-                        } else {
-                            emitCode(clearCode, codeSize)
-                            codeSize = 9
-                            nextCode = 258
-                            lzwTable.fill(-1)
-                        }
-                        prefix = k
-                    }
-                }
-                emitCode(prefix, codeSize)
-                emitCode(endCode, codeSize)
-                if (bitCnt > 0) {
-                    subBlock[subLen++] = (bitBuf and 0xFF).toByte()
-                }
-                if (subLen > 0) {
-                    out.write(subLen)
-                    out.write(subBlock, 0, subLen)
-                }
+                out.write(gifW and 0xFF)
+                out.write((gifW shr 8) and 0xFF)
+                out.write(gifH and 0xFF)
+                out.write((gifH shr 8) and 0xFF)
+                out.write(0xF7)
+                out.write(0)
                 out.write(0)
 
-                val frac = (f + 1).toFloat() / totalFrames.toFloat()
-                onProgress(frac, "GIF89a • ${gifW}×${gifH} • Frame ${f + 1}/$totalFrames (${(frac * 100).roundToInt()}%)")
-            }
+                for (r in 0 until 6) {
+                    val r8 = (r * 255) / 5
+                    for (g in 0 until 7) {
+                        val g8 = (g * 255) / 6
+                        for (b in 0 until 6) {
+                            val b8 = (b * 255) / 5
+                            out.write(r8)
+                            out.write(g8)
+                            out.write(b8)
+                        }
+                    }
+                }
+                for (gray in intArrayOf(36, 109, 182, 219)) {
+                    out.write(gray)
+                    out.write(gray)
+                    out.write(gray)
+                }
 
-            out.write(0x3B)
-            out.flush()
+                out.write(byteArrayOf(0x21, 0xFF.toByte(), 0x0B))
+                out.write("NETSCAPE2.0".toByteArray(Charsets.US_ASCII))
+                out.write(byteArrayOf(0x03, 0x01, 0x00, 0x00, 0x00))
+
+                var batchStart = 0
+                while (batchStart < totalFrames) {
+                    val batchCount = min(numWorkers, totalFrames - batchStart)
+                    val tasks = ArrayList<Callable<Unit>>(batchCount)
+
+                    for (w in 0 until batchCount) {
+                        val frameIdx = batchStart + w
+                        val slot = slots[w]
+                        tasks.add(Callable {
+                            val tSec = startTimeSec + frameIdx.toFloat() / fps.toFloat()
+                            renderFrameWithPrebakedBase(
+                                targetBmp = slot.bmp,
+                                targetCanvas = slot.canvas,
+                                prebakedBaseSlice = slot.baseSlice,
+                                layerBmp = layerBmp,
+                                temporalStrokes = temporalStrokes,
+                                paperColor = paperColor,
+                                timeSec = tSec,
+                                vm = slot.vm
+                            )
+                            val pixels = slot.pixels
+                            val indices = slot.indices
+                            slot.bmp.getPixels(pixels, 0, gifW, 0, 0, gifW, gifH)
+
+                            var pIdx = 0
+                            for (y in 0 until gifH) {
+                                val yRow = (y and 3) shl 2
+                                for (x in 0 until gifW) {
+                                    val c = pixels[pIdx]
+                                    val r = (c shr 16) and 0xFF
+                                    val g = (c shr 8) and 0xFF
+                                    val b = c and 0xFF
+                                    val d = (bayer4[yRow or (x and 3)] - 7) * 3
+                                    val ri = ((r * 5 + d + 127) / 255).coerceIn(0, 5)
+                                    val gi = ((g * 6 + d + 127) / 255).coerceIn(0, 6)
+                                    val bi = ((b * 5 + d + 127) / 255).coerceIn(0, 5)
+                                    indices[pIdx] = ((ri * 7 + gi) * 6 + bi).toByte()
+                                    pIdx++
+                                }
+                            }
+
+                            val fOut = slot.frameOut
+                            fOut.reset()
+                            fOut.write(0x21)
+                            fOut.write(0xF9)
+                            fOut.write(0x04)
+                            fOut.write(0x04)
+                            fOut.write(delayCs and 0xFF)
+                            fOut.write((delayCs shr 8) and 0xFF)
+                            fOut.write(0x00)
+                            fOut.write(0x00)
+
+                            fOut.write(0x2C)
+                            fOut.write(0); fOut.write(0)
+                            fOut.write(0); fOut.write(0)
+                            fOut.write(gifW and 0xFF); fOut.write((gifW shr 8) and 0xFF)
+                            fOut.write(gifH and 0xFF); fOut.write((gifH shr 8) and 0xFF)
+                            fOut.write(0x00)
+                            fOut.write(8)
+
+                            val subBlock = slot.subBlock
+                            val lzwTable = slot.lzwTable
+                            var subLen = 0
+                            var bitBuf = 0
+                            var bitCnt = 0
+
+                            fun emitCode(code: Int, size: Int) {
+                                bitBuf = bitBuf or (code shl bitCnt)
+                                bitCnt += size
+                                while (bitCnt >= 8) {
+                                    subBlock[subLen++] = (bitBuf and 0xFF).toByte()
+                                    bitBuf = bitBuf ushr 8
+                                    bitCnt -= 8
+                                    if (subLen == 255) {
+                                        fOut.write(255)
+                                        fOut.write(subBlock, 0, 255)
+                                        subLen = 0
+                                    }
+                                }
+                            }
+
+                            val clearCode = 256
+                            val endCode = 257
+                            var codeSize = 9
+                            var nextCode = 258
+                            var gen = slot.nextGeneration()
+                            var genShift = gen shl 12
+
+                            emitCode(clearCode, codeSize)
+                            var prefix = indices[0].toInt() and 0xFF
+                            val totalPx = indices.size
+                            for (i in 1 until totalPx) {
+                                val k = indices[i].toInt() and 0xFF
+                                val tIdx = (prefix shl 8) or k
+                                val ent = lzwTable[tIdx]
+                                if ((ent ushr 12) == gen) {
+                                    prefix = ent and 0xFFF
+                                } else {
+                                    emitCode(prefix, codeSize)
+                                    if (nextCode < 4096) {
+                                        lzwTable[tIdx] = genShift or nextCode
+                                        if (nextCode == (1 shl codeSize) && codeSize < 12) {
+                                            codeSize++
+                                        }
+                                        nextCode++
+                                    } else {
+                                        emitCode(clearCode, codeSize)
+                                        codeSize = 9
+                                        nextCode = 258
+                                        gen = slot.nextGeneration()
+                                        genShift = gen shl 12
+                                    }
+                                    prefix = k
+                                }
+                            }
+                            emitCode(prefix, codeSize)
+                            emitCode(endCode, codeSize)
+                            if (bitCnt > 0) {
+                                subBlock[subLen++] = (bitBuf and 0xFF).toByte()
+                            }
+                            if (subLen > 0) {
+                                fOut.write(subLen)
+                                fOut.write(subBlock, 0, subLen)
+                            }
+                            fOut.write(0)
+                        })
+                    }
+
+                    executor.invokeAll(tasks)
+
+                    for (w in 0 until batchCount) {
+                        slots[w].frameOut.writeTo(out)
+                    }
+
+                    val doneFrames = batchStart + batchCount
+                    val frac = doneFrames.toFloat() / totalFrames.toFloat()
+                    onProgress(frac, "GIF89a • ${gifW}×${gifH} • Frame $doneFrames/$totalFrames (${(frac * 100).roundToInt()}%)")
+                    batchStart += batchCount
+                }
+
+                out.write(0x3B)
+                out.flush()
+            }
+        } finally {
+            executor.shutdownNow()
+            for (s in slots) s.release()
         }
 
-        frameBmp.recycle()
         val savedPath = saveRawFileToPictures(context, tempFile, "$baseName.gif", "image/gif")
         tempFile.delete()
         return Result.success("$savedPath (${gifW}×${gifH} Loop GIF)")
@@ -836,6 +1020,83 @@ object ProjectStorageManager {
         }
     }
 
+    private fun saveTiffToPublicStorage(context: Context, srcFile: File, fileName: String): String {
+        var savedLoc = ""
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val resolver = context.contentResolver
+                val dlValues = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(MediaStore.Downloads.MIME_TYPE, "image/tiff")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/SketchBookOSS")
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val dlUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, dlValues)
+                if (dlUri != null) {
+                    resolver.openOutputStream(dlUri)?.use { out ->
+                        FileInputStream(srcFile).use { inp -> inp.copyTo(out) }
+                    }
+                    dlValues.clear()
+                    dlValues.put(MediaStore.Downloads.IS_PENDING, 0)
+                    resolver.update(dlUri, dlValues, null, null)
+                    savedLoc = "Download/SketchBookOSS/$fileName"
+                }
+            } catch (_: Exception) {}
+
+            try {
+                val resolver = context.contentResolver
+                val picValues = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/tiff")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SketchBookOSS")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val picUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, picValues)
+                if (picUri != null) {
+                    resolver.openOutputStream(picUri)?.use { out ->
+                        FileInputStream(srcFile).use { inp -> inp.copyTo(out) }
+                    }
+                    picValues.clear()
+                    picValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    resolver.update(picUri, picValues, null, null)
+                    if (savedLoc.isEmpty()) savedLoc = "Pictures/SketchBookOSS/$fileName"
+                }
+            } catch (_: Exception) {}
+
+            if (savedLoc.isNotEmpty()) return savedLoc
+        }
+
+        try {
+            val pubDl = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "SketchBookOSS")
+            if (!pubDl.exists()) pubDl.mkdirs()
+            val dlFile = File(pubDl, fileName)
+            FileInputStream(srcFile).use { inp ->
+                FileOutputStream(dlFile).use { out -> inp.copyTo(out) }
+            }
+            savedLoc = "Download/SketchBookOSS/$fileName"
+        } catch (_: Exception) {}
+
+        try {
+            val pubPic = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "SketchBookOSS")
+            if (!pubPic.exists()) pubPic.mkdirs()
+            val picFile = File(pubPic, fileName)
+            FileInputStream(srcFile).use { inp ->
+                FileOutputStream(picFile).use { out -> inp.copyTo(out) }
+            }
+            if (savedLoc.isEmpty()) savedLoc = "Pictures/SketchBookOSS/$fileName"
+        } catch (_: Exception) {}
+
+        if (savedLoc.isNotEmpty()) return savedLoc
+
+        val fbDir = File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir, "SketchBookOSS")
+        if (!fbDir.exists()) fbDir.mkdirs()
+        val fbFile = File(fbDir, fileName)
+        FileInputStream(srcFile).use { inp ->
+            FileOutputStream(fbFile).use { out -> inp.copyTo(out) }
+        }
+        return fbFile.absolutePath
+    }
+
     private fun saveImageToMediaStoreOrDisk(
         context: Context,
         bmp: Bitmap,
@@ -857,7 +1118,9 @@ object ProjectStorageManager {
             val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
             if (uri != null) {
                 resolver.openOutputStream(uri)?.use { out ->
-                    bmp.compress(format, quality, out)
+                    BufferedOutputStream(out, 131072).use { bos ->
+                        bmp.compress(format, quality, bos)
+                    }
                 }
                 values.clear()
                 values.put(MediaStore.Images.Media.IS_PENDING, 0)
@@ -870,7 +1133,7 @@ object ProjectStorageManager {
         if (!pubPic.exists()) pubPic.mkdirs()
         val outFile = File(pubPic, fileName)
         return try {
-            FileOutputStream(outFile).use { out ->
+            BufferedOutputStream(FileOutputStream(outFile), 131072).use { out ->
                 bmp.compress(format, quality, out)
             }
             outFile.absolutePath
@@ -878,7 +1141,7 @@ object ProjectStorageManager {
             val fallbackDir = File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir, "SketchBookOSS")
             if (!fallbackDir.exists()) fallbackDir.mkdirs()
             val fbFile = File(fallbackDir, fileName)
-            FileOutputStream(fbFile).use { out ->
+            BufferedOutputStream(FileOutputStream(fbFile), 131072).use { out ->
                 bmp.compress(format, quality, out)
             }
             fbFile.absolutePath
@@ -1021,23 +1284,29 @@ object ProjectStorageManager {
         headerBuf.position(softOffset)
         headerBuf.put(softwareBytes)
 
-        out.write(headerBuf.array())
+        val bos = BufferedOutputStream(out, 262144)
+        bos.write(headerBuf.array())
 
-        val rowPixels = IntArray(w)
-        val rowBytes = ByteArray(w * 4)
-        for (y in 0 until h) {
-            bmp.getPixels(rowPixels, 0, w, 0, y, w, 1)
+        val chunkRows = min(64, h).coerceAtLeast(1)
+        val chunkPixels = IntArray(w * chunkRows)
+        val chunkBytes = ByteArray(w * chunkRows * 4)
+        var y = 0
+        while (y < h) {
+            val rows = min(chunkRows, h - y)
+            bmp.getPixels(chunkPixels, 0, w, 0, y, w, rows)
+            val totalPx = w * rows
             var bPos = 0
-            for (x in 0 until w) {
-                val c = rowPixels[x]
-                rowBytes[bPos++] = ((c shr 16) and 0xFF).toByte()
-                rowBytes[bPos++] = ((c shr 8) and 0xFF).toByte()
-                rowBytes[bPos++] = (c and 0xFF).toByte()
-                rowBytes[bPos++] = ((c shr 24) and 0xFF).toByte()
+            for (i in 0 until totalPx) {
+                val c = chunkPixels[i]
+                chunkBytes[bPos++] = ((c shr 16) and 0xFF).toByte()
+                chunkBytes[bPos++] = ((c shr 8) and 0xFF).toByte()
+                chunkBytes[bPos++] = (c and 0xFF).toByte()
+                chunkBytes[bPos++] = ((c shr 24) and 0xFF).toByte()
             }
-            out.write(rowBytes)
+            bos.write(chunkBytes, 0, totalPx * 4)
+            y += rows
         }
-        out.flush()
+        bos.flush()
     }
 
     private fun sanitizeFileName(raw: String): String {
