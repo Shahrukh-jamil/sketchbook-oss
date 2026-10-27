@@ -67,6 +67,7 @@ class BrushShaderVM {
         memory.fill(0f)
     }
 
+    @Synchronized
     private fun getCompiled(code: String): List<Stmt> {
         return compiledCache.getOrPut(code) {
             try {
@@ -311,6 +312,7 @@ class BrushShaderVM {
                                 if (feather > 0.05f && cr >= 1.5f) {
                                     val coreStop = (1f - feather * 0.88f).coerceIn(0.04f, 0.92f)
                                     val rC = Color.red(col); val gC = Color.green(col); val bC = Color.blue(col)
+                                    fillPaint.color = Color.WHITE
                                     fillPaint.shader = RadialGradient(
                                         cx, cy, cr,
                                         intArrayOf(Color.argb(al, rC, gC, bC), Color.argb(al / 2, rC, gC, bC), Color.TRANSPARENT),
@@ -339,6 +341,7 @@ class BrushShaderVM {
                                 fillPaint.xfermode = xfer
                                 val rC = Color.red(col); val gC = Color.green(col); val bC = Color.blue(col)
                                 if (feather > 0.05f) {
+                                    fillPaint.color = Color.WHITE
                                     fillPaint.shader = RadialGradient(
                                         0f, 0f, max(1.5f, rx),
                                         intArrayOf(Color.argb(al, rC, gC, bC), Color.TRANSPARENT),

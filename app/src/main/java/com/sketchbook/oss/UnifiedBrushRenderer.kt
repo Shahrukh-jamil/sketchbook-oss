@@ -228,6 +228,7 @@ object UnifiedBrushRenderer {
 
             dabPaint.xfermode = activeXfer
             val outerR = rad * (1.2f + featherSmooth * 0.65f)
+            dabPaint.color = Color.WHITE
             dabPaint.shader = RadialGradient(
                 drawX, drawY, outerR.coerceAtLeast(2f),
                 intArrayOf(
@@ -290,7 +291,8 @@ object UnifiedBrushRenderer {
 
                 dabPaint.xfermode = activeXfer
                 val smAlpha = (dabAlpha * 0.55f).toInt().coerceIn(8, 190)
-                dabPaint.shader = RadialGradient(
+                dabPaint.color = Color.WHITE
+            dabPaint.shader = RadialGradient(
                     drawX, drawY, rad.coerceAtLeast(2f),
                     intArrayOf(Color.argb(smAlpha, sr, sg, sb), Color.argb(smAlpha / 2, sr, sg, sb), Color.TRANSPARENT),
                     floatArrayOf(0f, (brush.hardness / 100f).coerceIn(0.15f, 0.85f), 1f),
@@ -304,7 +306,8 @@ object UnifiedBrushRenderer {
             SketchBrushType.GLOW -> {
                 dabPaint.xfermode = activeXfer
                 val outerR = rad * 1.9f
-                dabPaint.shader = RadialGradient(
+                dabPaint.color = Color.WHITE
+            dabPaint.shader = RadialGradient(
                     drawX, drawY, outerR.coerceAtLeast(2f),
                     intArrayOf(
                         Color.argb(dabAlpha, if (isEraseMode) 0 else 255, if (isEraseMode) 0 else 255, if (isEraseMode) 0 else 255),
@@ -329,7 +332,8 @@ object UnifiedBrushRenderer {
                     // True Soft Airbrush / Feathered Nib RadialGradient!
                     val coreStop = (hardNorm * 0.75f).coerceIn(0.02f, 0.75f)
                     val midAlpha = (effectiveAlpha * (0.35f + hardNorm * 0.45f)).toInt().coerceIn(2, 240)
-                    dabPaint.shader = RadialGradient(
+                    dabPaint.color = Color.WHITE
+            dabPaint.shader = RadialGradient(
                         0f, 0f, rad.coerceAtLeast(1.5f),
                         intArrayOf(
                             Color.argb(effectiveAlpha, cr, cg, cb),
@@ -386,5 +390,104 @@ object UnifiedBrushRenderer {
         val ry = rad * (brush.roundness / 100f).coerceIn(0.12f, 1f)
         canvas.drawOval(RectF(-rad, -ry, rad, ry), dabPaint)
         canvas.restore()
+    }
+
+    /**
+     * Thread-safe renderer for persistent 60fps animated brush strokes (both VM-based `vm_anim`
+     * and procedural `time_animated` strokes). Used by live canvas drawing, static 1:1 PNG/TIFF
+     * saving, and high-bitrate MP4/GIF/WebM frame encoding.
+     */
+    fun renderTemporalStrokes(
+        canvas: Canvas,
+        temporalStrokes: List<TemporalAnimatedStroke>,
+        canvasBitmap: Bitmap?,
+        timeSec: Float,
+        vmInstance: BrushShaderVM = shaderVM
+    ) {
+        if (temporalStrokes.isEmpty()) return
+        val localFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val localStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        val localDstOut = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+
+        for (ts in temporalStrokes) {
+            val nCount = ts.nodes.size
+            if (nCount == 0) continue
+            val baseHsl = ColorStudioState.colorToHsl(ts.color)
+
+            if (ts.vmCode.isNotEmpty()) {
+                val histPts = ArrayList<PointF>(nCount)
+                val histRads = ArrayList<Float>(nCount)
+                vmInstance.resetMemory()
+                for (i in 0 until nCount) {
+                    val nd = ts.nodes[i]
+                    histPts.add(PointF(nd.x, nd.y))
+                    histRads.add(nd.radius)
+                    vmInstance.executeDabProgram(
+                        code = ts.vmCode,
+                        canvas = canvas,
+                        x = nd.x,
+                        y = nd.y,
+                        nx = nd.nx,
+                        ny = nd.ny,
+                        tx = nd.tx,
+                        ty = nd.ty,
+                        tangentDeg = nd.tangentDeg,
+                        radius = nd.radius,
+                        pressure = nd.pressure,
+                        speed = 1f,
+                        dabIndex = nd.dabIndex,
+                        timeSec = timeSec,
+                        baseHue = baseHsl[0],
+                        baseSat = baseHsl[1],
+                        baseLit = baseHsl[2],
+                        baseAlpha = (nd.alpha / 255f).coerceIn(0.02f, 1f),
+                        isErase = ts.isErase,
+                        deterministicRandom = true,
+                        historyPts = histPts,
+                        historyRadii = histRads,
+                        canvasBitmap = canvasBitmap,
+                        activeAgentsOut = null,
+                        fillPaint = localFillPaint,
+                        strokePaint = localStrokePaint,
+                        dstOutXfer = localDstOut
+                    )
+                }
+                continue
+            }
+
+            for (i in 0 until nCount) {
+                val nd = ts.nodes[i]
+                val wave = sin(timeSec * ts.speed + nd.phase) * ts.waveAmp
+                val animX = nd.x + nd.nx * wave
+                val animY = nd.y + nd.ny * wave
+                val pulse = 0.78f + 0.28f * sin(timeSec * (ts.speed * 1.3f) + nd.phase * 1.7f)
+                val curRad = (nd.radius * pulse).coerceAtLeast(1.5f)
+
+                val shiftedHue = (baseHsl[0] + sin(timeSec * 2f + nd.phase) * ts.hueShift + 360f) % 360f
+                val glowCol = ColorStudioState.hslToColor(shiftedHue, baseHsl[1].coerceAtLeast(0.75f), baseHsl[2].coerceIn(0.35f, 0.7f))
+                val gr = Color.red(glowCol); val gg = Color.green(glowCol); val gb = Color.blue(glowCol)
+
+                localFillPaint.color = Color.WHITE
+                localFillPaint.shader = RadialGradient(
+                    animX, animY, curRad * 2.2f,
+                    intArrayOf(
+                        Color.argb((nd.alpha * 0.42f).toInt().coerceIn(8, 160), gr, gg, gb),
+                        Color.argb((nd.alpha * 0.14f).toInt().coerceIn(4, 70), gr, gg, gb),
+                        Color.TRANSPARENT
+                    ),
+                    floatArrayOf(0f, 0.55f, 1f),
+                    Shader.TileMode.CLAMP
+                )
+                canvas.drawCircle(animX, animY, curRad * 2.2f, localFillPaint)
+                localFillPaint.shader = null
+
+                localFillPaint.color = Color.argb(nd.alpha, 255, 255, 255)
+                canvas.drawCircle(animX, animY, curRad * 0.42f, localFillPaint)
+            }
+        }
     }
 }

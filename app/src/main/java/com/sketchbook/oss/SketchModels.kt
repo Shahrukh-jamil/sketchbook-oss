@@ -12,6 +12,12 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+enum class AnimatedExportFormat(val label: String, val ext: String) {
+    MP4_HIGH_BITRATE("MP4 (60fps High Bitrate)", "mp4"),
+    GIF_LOOP("Animated GIF (Loop)", "gif"),
+    WEBM_HIGH_BITRATE("WebM (60fps High Bitrate)", "webm")
+}
+
 enum class TopPopupState {
     NONE,
     BUTTON1_MAIN,
@@ -456,6 +462,10 @@ class SketchProjectState(
         for (s in redoStack) if (!s.bitmap.isRecycled) s.bitmap.recycle()
         undoStack.clear()
         redoStack.clear()
+    }
+
+    fun hasAnimatedStrokes(): Boolean {
+        return temporalStrokes.any { it.nodes.isNotEmpty() }
     }
 
     fun calcMegapixels(): Float {

@@ -73,6 +73,12 @@ class SketchWorkspaceView(
     // Async Saving Lock & Non-Closable Saving Modal State
     @Volatile
     var isSavingInProgress: Boolean = false
+    @Volatile
+    var savingModalTitle: String = "Saving sketch..."
+    @Volatile
+    var savingModalSubtitle: String = ""
+    @Volatile
+    var savingProgressFraction: Float = -1f
     private var savingAnimAngle: Float = 0f
 
     // Eyedropper Mode
@@ -187,79 +193,13 @@ class SketchWorkspaceView(
     private fun renderTemporalAnimatedStrokes(canvas: Canvas, timeSec: Float) {
         if (project.temporalStrokes.isEmpty()) return
         val bmp = project.ensureCanvasBitmap()
-        for (ts in project.temporalStrokes) {
-            val baseHsl = ColorStudioState.colorToHsl(ts.color)
-            val nCount = ts.nodes.size
-            if (ts.vmCode.isNotEmpty()) {
-                val histPts = ArrayList<PointF>(nCount)
-                val histRads = ArrayList<Float>(nCount)
-                UnifiedBrushRenderer.shaderVM.resetMemory()
-                for (i in 0 until nCount) {
-                    val nd = ts.nodes[i]
-                    histPts.add(PointF(nd.x, nd.y))
-                    histRads.add(nd.radius)
-                    UnifiedBrushRenderer.shaderVM.executeDabProgram(
-                        code = ts.vmCode,
-                        canvas = canvas,
-                        x = nd.x,
-                        y = nd.y,
-                        nx = nd.nx,
-                        ny = nd.ny,
-                        tx = nd.tx,
-                        ty = nd.ty,
-                        tangentDeg = nd.tangentDeg,
-                        radius = nd.radius,
-                        pressure = nd.pressure,
-                        speed = 1f,
-                        dabIndex = nd.dabIndex,
-                        timeSec = timeSec,
-                        baseHue = baseHsl[0],
-                        baseSat = baseHsl[1],
-                        baseLit = baseHsl[2],
-                        baseAlpha = (nd.alpha / 255f).coerceIn(0.02f, 1f),
-                        isErase = ts.isErase,
-                        deterministicRandom = true,
-                        historyPts = histPts,
-                        historyRadii = histRads,
-                        canvasBitmap = bmp,
-                        activeAgentsOut = null,
-                        fillPaint = vmTempFillPaint,
-                        strokePaint = vmTempStrokePaint,
-                        dstOutXfer = clearXfermode
-                    )
-                }
-                continue
-            }
-
-            for (i in 0 until nCount) {
-                val nd = ts.nodes[i]
-                val wave = sin(timeSec * ts.speed + nd.phase) * ts.waveAmp
-                val animX = nd.x + nd.nx * wave
-                val animY = nd.y + nd.ny * wave
-                val pulse = 0.78f + 0.28f * sin(timeSec * (ts.speed * 1.3f) + nd.phase * 1.7f)
-                val curRad = (nd.radius * pulse).coerceAtLeast(1.5f)
-
-                val shiftedHue = (baseHsl[0] + sin(timeSec * 2f + nd.phase) * ts.hueShift + 360f) % 360f
-                val glowCol = ColorStudioState.hslToColor(shiftedHue, baseHsl[1].coerceAtLeast(0.75f), baseHsl[2].coerceIn(0.35f, 0.7f))
-                val gr = Color.red(glowCol); val gg = Color.green(glowCol); val gb = Color.blue(glowCol)
-
-                strokePaint.shader = RadialGradient(
-                    animX, animY, curRad * 2.2f,
-                    intArrayOf(
-                        Color.argb((nd.alpha * 0.42f).toInt().coerceIn(8, 160), gr, gg, gb),
-                        Color.argb((nd.alpha * 0.14f).toInt().coerceIn(4, 70), gr, gg, gb),
-                        Color.TRANSPARENT
-                    ),
-                    floatArrayOf(0f, 0.55f, 1f),
-                    Shader.TileMode.CLAMP
-                )
-                canvas.drawCircle(animX, animY, curRad * 2.2f, strokePaint)
-                strokePaint.shader = null
-
-                strokePaint.color = Color.argb(nd.alpha, 255, 255, 255)
-                canvas.drawCircle(animX, animY, curRad * 0.42f, strokePaint)
-            }
-        }
+        UnifiedBrushRenderer.renderTemporalStrokes(
+            canvas = canvas,
+            temporalStrokes = project.temporalStrokes,
+            canvasBitmap = bmp,
+            timeSec = timeSec,
+            vmInstance = UnifiedBrushRenderer.shaderVM
+        )
     }
 
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -485,8 +425,8 @@ class SketchWorkspaceView(
         bgPaint.color = Color.argb(145, 0, 0, 0)
         canvas.drawRect(0f, 0f, w, h, bgPaint)
 
-        val cardW = 560f * sx
-        val cardH = 240f * sx
+        val cardW = 650f * sx
+        val cardH = if (savingProgressFraction >= 0f) 275f * sx else 240f * sx
         val cardRect = RectF((w - cardW) * 0.5f, (h - cardH) * 0.5f, (w + cardW) * 0.5f, (h + cardH) * 0.5f)
         bgPaint.color = Color.rgb(245, 245, 245)
         canvas.drawRect(cardRect, bgPaint)
@@ -494,27 +434,42 @@ class SketchWorkspaceView(
         borderPaint.strokeWidth = 3f * sx
         canvas.drawRect(cardRect, borderPaint)
 
-        // Animated spinner ring
-        val spinCx = cardRect.left + 110f * sx
-        val spinCy = cardRect.centerY()
-        val spinR = 42f * sx
+        val spinCx = cardRect.left + 96f * sx
+        val spinCy = cardRect.top + 118f * sx
+        val spinR = 40f * sx
         borderPaint.color = Color.rgb(210, 210, 210)
         borderPaint.strokeWidth = 8f * sx
         canvas.drawCircle(spinCx, spinCy, spinR, borderPaint)
         borderPaint.color = Color.rgb(55, 116, 205)
         canvas.drawArc(RectF(spinCx - spinR, spinCy - spinR, spinCx + spinR, spinCy + spinR), savingAnimAngle, 110f, false, borderPaint)
 
+        val textLeft = cardRect.left + 166f * sx
+        val maxTextW = cardRect.right - textLeft - 28f * sx
+
         textPaint.color = Color.rgb(30, 30, 30)
-        textPaint.textSize = 38f * sx
+        textPaint.textSize = 35f * sx
         textPaint.textAlign = Paint.Align.LEFT
         textPaint.isFakeBoldText = true
-        canvas.drawText("Saving sketch...", cardRect.left + 185f * sx, spinCy - 6f * sx, textPaint)
+        canvas.drawText(ellipsize(savingModalTitle, textPaint, maxTextW), textLeft, spinCy - 6f * sx, textPaint)
         textPaint.isFakeBoldText = false
 
+        val subStr = savingModalSubtitle.ifBlank { "${project.width} × ${project.height} px" }
         subTextPaint.color = Color.rgb(105, 105, 105)
-        subTextPaint.textSize = 27f * sx
+        subTextPaint.textSize = 25f * sx
         subTextPaint.textAlign = Paint.Align.LEFT
-        canvas.drawText("${project.width} × ${project.height} px", cardRect.left + 185f * sx, spinCy + 40f * sx, subTextPaint)
+        canvas.drawText(ellipsize(subStr, subTextPaint, maxTextW), textLeft, spinCy + 38f * sx, subTextPaint)
+
+        if (savingProgressFraction >= 0f) {
+            val barLeft = cardRect.left + 42f * sx
+            val barRight = cardRect.right - 42f * sx
+            val barTop = cardRect.bottom - 52f * sx
+            val barBot = cardRect.bottom - 30f * sx
+            bgPaint.color = Color.rgb(215, 220, 228)
+            canvas.drawRect(barLeft, barTop, barRight, barBot, bgPaint)
+            val fillW = (barRight - barLeft) * savingProgressFraction.coerceIn(0f, 1f)
+            bgPaint.color = Color.rgb(55, 116, 205)
+            canvas.drawRect(barLeft, barTop, barLeft + fillW, barBot, bgPaint)
+        }
     }
 
     // ==========================================================================
@@ -1105,18 +1060,28 @@ class SketchWorkspaceView(
     }
 
     private fun drawSaveMenu(canvas: Canvas, left: Float, top: Float, sx: Float, pal: ModUiPalette) {
-        val panelW = if (project.isSavedOnce) 688f * sx else 580f * sx
+        val hasAnim = project.hasAnimatedStrokes()
+        val panelW = when {
+            hasAnim -> 736f * sx
+            project.isSavedOnce -> 688f * sx
+            else -> 580f * sx
+        }
         val headerH = 132f * sx
         val nameRowH = 118f * sx
         val itemRowH = 132f * sx
-        val numActionRows = if (project.isSavedOnce) 2 else 1
-        val totalH = headerH + nameRowH + itemRowH * numActionRows
+        val sectionBarH = if (hasAnim) 52f * sx else 0f
+        val staticRows = if (project.isSavedOnce) 2 else 1
+        val animRows = if (hasAnim) 3 else 0
+        val totalH = headerH + nameRowH + itemRowH * (staticRows + animRows) + sectionBarH
         val right = left + panelW
         val bottom = top + totalH
         currentPopupBounds.set(left, top, right, bottom)
 
         bgPaint.color = pal.popupBg
         canvas.drawRect(currentPopupBounds, bgPaint)
+        borderPaint.color = pal.borderColor
+        borderPaint.strokeWidth = 2f * sx
+        canvas.drawRect(currentPopupBounds, borderPaint)
 
         drawPopupHeader(canvas, left, top, panelW, headerH, sx, "Save", "BACK_TO_MAIN", pal)
 
@@ -1154,26 +1119,95 @@ class SketchWorkspaceView(
         borderPaint.color = pal.borderColor
         canvas.drawLine(left, nameBot, right, nameBot, borderPaint)
 
-        val r1Top = nameBot
+        val maxRowTextW = panelW - 156f * sx
+        var curY = nameBot
+
+        val r1Top = curY
         val r1Bot = r1Top + itemRowH
         SketchIcons.drawPictureSaveIcon(canvas, left + 58f * sx, r1Top + itemRowH / 2f, 52f * sx, isCopy = false, color = pal.iconTint, bgMask = pal.popupBg)
         textPaint.color = pal.textPrimary
-        textPaint.textSize = 39f * sx
+        textPaint.textSize = 36f * sx
         textPaint.textAlign = Paint.Align.LEFT
         textPaint.isFakeBoldText = false
-        canvas.drawText("Save current sketch", left + 132f * sx, r1Top + itemRowH / 2f + 14f * sx, textPaint)
+        if (hasAnim) {
+            canvas.drawText(ellipsize("Save current sketch (PNG)", textPaint, maxRowTextW), left + 132f * sx, r1Top + 56f * sx, textPaint)
+            subTextPaint.color = pal.textSecondary
+            subTextPaint.textSize = 23f * sx
+            subTextPaint.textAlign = Paint.Align.LEFT
+            canvas.drawText(ellipsize("Static 1:1 PNG + SketchBook TIFF", subTextPaint, maxRowTextW), left + 132f * sx, r1Top + 98f * sx, subTextPaint)
+        } else {
+            canvas.drawText(ellipsize("Save current sketch", textPaint, maxRowTextW), left + 132f * sx, r1Top + itemRowH / 2f + 14f * sx, textPaint)
+        }
         hitZones.add(HitZone("ACTION_SAVE_CURRENT", RectF(left, r1Top, right, r1Bot)))
+        curY = r1Bot
 
         if (project.isSavedOnce) {
-            val r2Top = r1Bot
+            val r2Top = curY
             val r2Bot = r2Top + itemRowH
             borderPaint.color = pal.borderColor
             canvas.drawLine(left, r2Top, right, r2Top, borderPaint)
 
             SketchIcons.drawPictureSaveIcon(canvas, left + 58f * sx, r2Top + itemRowH / 2f, 52f * sx, isCopy = true, color = pal.iconTint, bgMask = pal.popupBg)
+            textPaint.color = pal.textPrimary
+            textPaint.textSize = 36f * sx
             textPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText("Save current sketch as a copy", left + 132f * sx, r2Top + itemRowH / 2f + 14f * sx, textPaint)
+            canvas.drawText(ellipsize("Save current sketch as a copy", textPaint, maxRowTextW), left + 132f * sx, r2Top + itemRowH / 2f + 14f * sx, textPaint)
             hitZones.add(HitZone("ACTION_SAVE_COPY", RectF(left, r2Top, right, r2Bot)))
+            curY = r2Bot
+        }
+
+        if (hasAnim) {
+            borderPaint.color = pal.borderColor
+            canvas.drawLine(left, curY, right, curY, borderPaint)
+
+            val secTop = curY
+            val secBot = secTop + sectionBarH
+            bgPaint.color = pal.popupHeaderBg
+            canvas.drawRect(left, secTop, right, secBot, bgPaint)
+            subTextPaint.color = pal.accentColor
+            subTextPaint.textSize = 22f * sx
+            subTextPaint.isFakeBoldText = true
+            subTextPaint.textAlign = Paint.Align.LEFT
+            canvas.drawText("ANIMATED ARTWORK EXPORT (HIGH BITRATE)", left + 28f * sx, secTop + 34f * sx, subTextPaint)
+            subTextPaint.isFakeBoldText = false
+            curY = secBot
+
+            data class AnimOption(val id: String, val badge: String, val title: String, val subtitle: String)
+            val animOptions = listOf(
+                AnimOption("ACTION_SAVE_ANIM_MP4", "MP4", "Save as MP4 (60fps High Bitrate)", "H.264 28 Mbps • Movies/SketchBookOSS"),
+                AnimOption("ACTION_SAVE_ANIM_GIF", "GIF", "Save as Animated GIF (Loop)", "Infinite Loop GIF89a • Pictures/SketchBookOSS"),
+                AnimOption("ACTION_SAVE_ANIM_WEBM", "WEBM", "Save as WebM (60fps High Bitrate)", "VP9/VP8 High Bitrate • Movies/SketchBookOSS")
+            )
+
+            for (opt in animOptions) {
+                borderPaint.color = pal.borderColor
+                canvas.drawLine(left, curY, right, curY, borderPaint)
+                val rTop = curY
+                val rBot = rTop + itemRowH
+                SketchIcons.drawFileFormatIcon(
+                    c = canvas,
+                    cx = left + 58f * sx,
+                    cy = rTop + itemRowH / 2f,
+                    size = 54f * sx,
+                    label = opt.badge,
+                    stacked = false,
+                    starred = false,
+                    color = pal.accentColor,
+                    bgMask = pal.popupBg
+                )
+                textPaint.color = pal.textPrimary
+                textPaint.textSize = 34f * sx
+                textPaint.textAlign = Paint.Align.LEFT
+                canvas.drawText(ellipsize(opt.title, textPaint, maxRowTextW), left + 132f * sx, rTop + 56f * sx, textPaint)
+
+                subTextPaint.color = pal.textSecondary
+                subTextPaint.textSize = 23f * sx
+                subTextPaint.textAlign = Paint.Align.LEFT
+                canvas.drawText(ellipsize(opt.subtitle, subTextPaint, maxRowTextW), left + 132f * sx, rTop + 98f * sx, subTextPaint)
+
+                hitZones.add(HitZone(opt.id, RectF(left, rTop, right, rBot)))
+                curY = rBot
+            }
         }
     }
 
@@ -1210,15 +1244,20 @@ class SketchWorkspaceView(
     }
 
     private fun drawFormatListMenu(canvas: Canvas, left: Float, top: Float, sx: Float, title: String, pal: ModUiPalette) {
-        val panelW = 622f * sx
+        val panelW = 660f * sx
         val rowH = 132f * sx
-        val formats = listOf(
+        val formats = mutableListOf(
             Triple("TIF", "Sketchbook TIFF", true),
             Triple("PSD", "PSD", true),
             Triple("PNG", "PNG", false),
             Triple("JPG", "JPG", false),
             Triple("PDF", "PDF", false)
         )
+        if (project.hasAnimatedStrokes()) {
+            formats.add(Triple("MP4", "MP4 Video (High Bitrate)", false))
+            formats.add(Triple("GIF", "Animated GIF (Loop)", false))
+            formats.add(Triple("WEBM", "WebM Video (High Bitrate)", false))
+        }
         val right = left + panelW
         val bottom = top + rowH * (1 + formats.size)
         currentPopupBounds.set(left, top, right, bottom)
@@ -1231,6 +1270,7 @@ class SketchWorkspaceView(
         for ((idx, fmt) in formats.withIndex()) {
             val ry = top + rowH * (idx + 1)
             val cy = ry + rowH / 2f
+            val isAnimFmt = fmt.first in listOf("MP4", "GIF", "WEBM")
             SketchIcons.drawFileFormatIcon(
                 c = canvas,
                 cx = left + 82f * sx,
@@ -1239,13 +1279,15 @@ class SketchWorkspaceView(
                 label = fmt.first,
                 stacked = fmt.third,
                 starred = (fmt.first == "PDF"),
-                color = pal.iconTint,
+                color = if (isAnimFmt) pal.accentColor else pal.iconTint,
                 bgMask = pal.popupBg
             )
             textPaint.color = pal.textPrimary
-            textPaint.textSize = 39f * sx
+            textPaint.textSize = 36f * sx
             textPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText(fmt.second, left + 190f * sx, cy + 14f * sx, textPaint)
+            canvas.drawText(ellipsize(fmt.second, textPaint, panelW - 210f * sx), left + 180f * sx, cy + 14f * sx, textPaint)
+
+            hitZones.add(HitZone("EXPORT_FMT_${fmt.first}", RectF(left, ry, right, ry + rowH)))
 
             if (idx < formats.size - 1) {
                 borderPaint.color = pal.borderColor
@@ -1666,6 +1708,12 @@ class SketchWorkspaceView(
                     if (maxPointersInGesture == 1 && !strokeCommittedToBitmap && pendingStrokeSamples.isNotEmpty()) {
                         commitPendingStrokeSamples()
                     }
+                    val ts = activeTemporalStroke
+                    if (ts != null && ts.nodes.size == 1) {
+                        val n0 = ts.nodes[0]
+                        ts.nodes.add(n0.copy(x = n0.x + 1.5f, phase = 0.35f, dabIndex = 1))
+                    }
+                    activeTemporalStroke = null
                     pendingStrokeSamples.clear()
                     isDrawingStroke = false
                     strokeCommittedToBitmap = false
@@ -1787,7 +1835,7 @@ class SketchWorkspaceView(
         if (segDist < 0.001f && strokeCarryDist == 0f) {
             if ((brush.modMode == "time_animated" || brush.modMode == "vm_anim") && !colState.isColorlessEraser) {
                 val ts = activeTemporalStroke
-                if (ts != null && mid1X in 0f..bmp.width.toFloat() && mid1Y in 0f..bmp.height.toFloat()) {
+                if (ts != null) {
                     val dabAlpha = ((brush.opacity / 100f) * 255f).roundToInt().coerceIn(8, 255)
                     ts.nodes.add(TemporalDabNode(mid1X, mid1Y, 0f, 1f, curRadius, dabAlpha, 0f, 1f, 0f, tangentDeg, pNorm, 0))
                 }
@@ -1825,22 +1873,29 @@ class SketchWorkspaceView(
 
                 if ((brush.modMode == "time_animated" || brush.modMode == "vm_anim") && !colState.isColorlessEraser) {
                     val ts = activeTemporalStroke
-                    if (ts != null && x in 0f..bmp.width.toFloat() && y in 0f..bmp.height.toFloat()) {
+                    if (ts != null) {
                         val dx = mid2X - mid1X
                         val dy = mid2Y - mid1Y
                         val len = hypot(dx, dy).coerceAtLeast(0.001f)
+                        val nx = -dy / len
+                        val ny = dx / len
+                        val tx = dx / len
+                        val ty = dy / len
+                        if (ts.nodes.size == 1) {
+                            ts.nodes[0] = ts.nodes[0].copy(nx = nx, ny = ny, tx = tx, ty = ty, tangentDeg = tangentDeg)
+                        }
                         val dabAlpha = ((brush.opacity / 100f) * 255f).roundToInt().coerceIn(8, 255)
                         ts.nodes.add(
                             TemporalDabNode(
-                                x = x.coerceIn(0f, bmp.width.toFloat()),
-                                y = y.coerceIn(0f, bmp.height.toFloat()),
-                                nx = -dy / len,
-                                ny = dx / len,
+                                x = x,
+                                y = y,
+                                nx = nx,
+                                ny = ny,
                                 radius = curRadius,
                                 alpha = dabAlpha,
                                 phase = ts.nodes.size * 0.35f,
-                                tx = dx / len,
-                                ty = dy / len,
+                                tx = tx,
+                                ty = ty,
                                 tangentDeg = tangentDeg,
                                 pressure = pNorm,
                                 dabIndex = ts.nodes.size
@@ -2172,6 +2227,30 @@ class SketchWorkspaceView(
                 performAsyncSave(asCopy = true, onAfterSave = null)
             }
 
+            "ACTION_SAVE_ANIM_MP4", "EXPORT_FMT_MP4" -> {
+                performAsyncAnimatedSave(AnimatedExportFormat.MP4_HIGH_BITRATE)
+            }
+
+            "ACTION_SAVE_ANIM_GIF", "EXPORT_FMT_GIF" -> {
+                performAsyncAnimatedSave(AnimatedExportFormat.GIF_LOOP)
+            }
+
+            "ACTION_SAVE_ANIM_WEBM", "EXPORT_FMT_WEBM" -> {
+                performAsyncAnimatedSave(AnimatedExportFormat.WEBM_HIGH_BITRATE)
+            }
+
+            "EXPORT_FMT_PNG", "EXPORT_FMT_PSD", "EXPORT_FMT_PDF" -> {
+                performAsyncStaticFormatExport("PNG")
+            }
+
+            "EXPORT_FMT_JPG" -> {
+                performAsyncStaticFormatExport("JPG")
+            }
+
+            "EXPORT_FMT_TIF" -> {
+                performAsyncStaticFormatExport("TIF")
+            }
+
             "OPEN_EXPORT_AS" -> {
                 popupState = TopPopupState.EXPORT_AS_MENU
                 invalidate()
@@ -2320,17 +2399,30 @@ class SketchWorkspaceView(
     private fun performAsyncSave(asCopy: Boolean, onAfterSave: (() -> Unit)?) {
         if (isSavingInProgress) return
         closeInlineEditor()
+        savingModalTitle = "Saving sketch..."
+        savingModalSubtitle = "${project.width} × ${project.height} px (PNG + TIFF)"
+        savingProgressFraction = -1f
         isSavingInProgress = true
         popupState = TopPopupState.NONE
         invalidate()
 
         val paperTint = modEngine.resolveUiPalette().paperTint
         val appCtx = context.applicationContext
+        val snapTimeSec = (System.nanoTime() - animStartNano) / 1_000_000_000f
+        val temporalSnapshot = project.temporalStrokes.map { it.deepCopy() }
 
         Thread {
-            val res = ProjectStorageManager.saveProjectToDevice(appCtx, project, asCopy, paperTint)
+            val res = ProjectStorageManager.saveProjectToDevice(
+                context = appCtx,
+                project = project,
+                asCopy = asCopy,
+                paperColor = paperTint,
+                snapshotTimeSec = snapTimeSec,
+                temporalStrokesSnapshot = temporalSnapshot
+            )
             post {
                 isSavingInProgress = false
+                savingProgressFraction = -1f
                 res.onSuccess { path ->
                     project.isSavedOnce = true
                     project.isDirty = false
@@ -2339,6 +2431,91 @@ class SketchWorkspaceView(
                     onAfterSave?.invoke()
                 }.onFailure { err ->
                     showBanner("Save failed: ${err.message}")
+                }
+                invalidate()
+            }
+        }.start()
+    }
+
+    private fun performAsyncStaticFormatExport(formatCode: String) {
+        if (isSavingInProgress) return
+        closeInlineEditor()
+        savingModalTitle = "Exporting $formatCode..."
+        savingModalSubtitle = "${project.width} × ${project.height} px"
+        savingProgressFraction = -1f
+        isSavingInProgress = true
+        popupState = TopPopupState.NONE
+        invalidate()
+
+        val paperTint = modEngine.resolveUiPalette().paperTint
+        val appCtx = context.applicationContext
+        val snapTimeSec = (System.nanoTime() - animStartNano) / 1_000_000_000f
+        val temporalSnapshot = project.temporalStrokes.map { it.deepCopy() }
+
+        Thread {
+            val res = ProjectStorageManager.exportStaticFormatToDevice(
+                context = appCtx,
+                project = project,
+                formatCode = formatCode,
+                paperColor = paperTint,
+                snapshotTimeSec = snapTimeSec,
+                temporalStrokesSnapshot = temporalSnapshot
+            )
+            post {
+                isSavingInProgress = false
+                savingProgressFraction = -1f
+                res.onSuccess { path ->
+                    project.isSavedOnce = true
+                    project.isDirty = false
+                    project.lastSavedPath = path
+                    showBanner("Exported $formatCode -> $path")
+                }.onFailure { err ->
+                    showBanner("Export failed: ${err.message}")
+                }
+                invalidate()
+            }
+        }.start()
+    }
+
+    private fun performAsyncAnimatedSave(format: AnimatedExportFormat) {
+        if (isSavingInProgress) return
+        closeInlineEditor()
+        savingModalTitle = "Encoding ${format.ext.uppercase()}..."
+        savingModalSubtitle = "Preparing high-bitrate encoder..."
+        savingProgressFraction = 0.02f
+        isSavingInProgress = true
+        popupState = TopPopupState.NONE
+        invalidate()
+
+        val paperTint = modEngine.resolveUiPalette().paperTint
+        val appCtx = context.applicationContext
+        val startTimeSec = (System.nanoTime() - animStartNano) / 1_000_000_000f
+        val temporalSnapshot = project.temporalStrokes.map { it.deepCopy() }
+
+        Thread {
+            val res = ProjectStorageManager.saveAnimatedProjectToDevice(
+                context = appCtx,
+                project = project,
+                format = format,
+                paperColor = paperTint,
+                startTimeSec = startTimeSec,
+                temporalStrokesSnapshot = temporalSnapshot,
+                onProgress = { frac, statusText ->
+                    savingProgressFraction = frac
+                    savingModalSubtitle = statusText
+                    postInvalidateOnAnimation()
+                }
+            )
+            post {
+                isSavingInProgress = false
+                savingProgressFraction = -1f
+                res.onSuccess { path ->
+                    project.isSavedOnce = true
+                    project.isDirty = false
+                    project.lastSavedPath = path
+                    showBanner("Saved ${format.ext.uppercase()} -> $path")
+                }.onFailure { err ->
+                    showBanner("${format.ext.uppercase()} export failed: ${err.message}")
                 }
                 invalidate()
             }
